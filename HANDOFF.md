@@ -48,6 +48,7 @@ Credential values are never recorded here. This checkout's connection state live
 | Lifecycle | Complete | Live rename, archive, pin, snooze, settle, history, diff, and guarded deletion verified | Three disposable build-test threads were removed and confirmed absent |
 | Agent hardening | Complete | JSON schema versioning, bounds, all-output redaction, previews, compatibility checks, a 73-test suite, and both-machine read-only smoke | Operation tests cover creation, recoverable send, task-aware wait, model, stop, requests, organization, deletion, and monitor reconnect/resume/deduplication |
 | Reliability follow-up | Complete | `make setup`, `make check`, `make smoke`, `make live-smoke`, resumed live follow, live wait, and live run preview | Version 0.2.4 preserves retry instructions, keeps stream snapshots authoritative, avoids guessing superseded outcomes, and applies total deadlines through WebSocket shutdown |
+| Final independent audit | Complete | GPT-5.6 review; 73 tests; raw stalled-peer deadline test; both-machine smoke | No flags; a 0.1-second wait returned in 0.103 seconds and the worktree was clean |
 
 ## Verified limitations
 
