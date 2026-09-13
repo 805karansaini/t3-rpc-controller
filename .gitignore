@@ -1,0 +1,16 @@
+# Python caches
+__pycache__/
+*.py[cod]
+.venv/
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Mandatory local controller state and credentials
+.state/
+
+# Local outputs
+*.log
+*.tmp
