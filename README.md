@@ -119,6 +119,20 @@ Search user and assistant messages across one or every machine:
 ./t3_rpc_controller.py search "text to find" --environment mac --limit 20
 ```
 
+List configured provider instances, their health, capabilities, and models without exposing account identity or driver configuration:
+
+```bash
+./t3_rpc_controller.py providers
+./t3_rpc_controller.py providers --environment mac --include-disabled
+```
+
+List models or narrow the result to an exact provider instance:
+
+```bash
+./t3_rpc_controller.py models --environment mac
+./t3_rpc_controller.py models --environment mac --provider codex
+```
+
 Run tests:
 
 ```bash

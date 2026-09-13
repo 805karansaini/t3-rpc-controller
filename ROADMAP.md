@@ -29,8 +29,8 @@ The work is complete when an agent can use documented commands to identify a mac
 - [x] List and filter threads by environment, project, status, and archived state.
 - [x] Show one thread with its current task, model, provider, pending actions, and timestamps.
 - [x] Search threads through T3's native search operation.
-- [ ] Discover provider instances and their available models.
-- [ ] Expose project defaults needed when creating a thread.
+- [x] Discover provider instances and their available models.
+- [x] Expose project defaults needed when creating a thread.
 
 ### 3. Add live updates
 

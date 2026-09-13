@@ -18,9 +18,11 @@ from t3_rpc_controller import (
     merge_environment_projects,
     normalize_url,
     oauth_exchange_payload,
+    provider_row,
     project_rows_from_snapshot,
     read_pairing_credential,
     safe_environment_config,
+    safe_model_row,
     list_many_projects,
 )
 
@@ -123,8 +125,26 @@ class RpcProtocolTests(unittest.TestCase):
         self.assertEqual(
             project_rows_from_snapshot(snapshot),
             [
-                {"id": "1", "title": "Alpha", "workspaceRoot": "/a"},
-                {"id": "2", "title": "Zulu", "workspaceRoot": "/z"},
+                {
+                    "id": "1",
+                    "title": "Alpha",
+                    "workspaceRoot": "/a",
+                    "defaultModelSelection": None,
+                    "defaultThreadEnvMode": None,
+                    "repositoryIdentity": None,
+                    "autoPull": None,
+                    "scripts": [],
+                },
+                {
+                    "id": "2",
+                    "title": "Zulu",
+                    "workspaceRoot": "/z",
+                    "defaultModelSelection": None,
+                    "defaultThreadEnvMode": None,
+                    "repositoryIdentity": None,
+                    "autoPull": None,
+                    "scripts": [],
+                },
             ],
         )
 
@@ -188,6 +208,38 @@ class RpcProtocolTests(unittest.TestCase):
                 {"environment": "mac", "id": "same", "title": "Repo", "workspaceRoot": "/mac/repo"},
             ],
         )
+
+    def test_provider_output_omits_auth_identity_and_driver_configuration(self):
+        row = provider_row(
+            {
+                "instanceId": "codex_work",
+                "driver": "codex",
+                "enabled": True,
+                "installed": True,
+                "status": "ready",
+                "auth": {"status": "authenticated", "email": "private@example.com"},
+                "config": {"token": "secret"},
+                "models": [],
+            },
+            "mac",
+        )
+        self.assertEqual(row["authStatus"], "authenticated")
+        self.assertNotIn("auth", row)
+        self.assertNotIn("config", row)
+
+    def test_model_output_keeps_selection_metadata(self):
+        row = safe_model_row(
+            {
+                "slug": "gpt-test",
+                "name": "GPT Test",
+                "isDefault": True,
+                "isCustom": False,
+                "capabilities": {"optionDescriptors": []},
+            }
+        )
+        self.assertEqual(row["slug"], "gpt-test")
+        self.assertTrue(row["isDefault"])
+        self.assertEqual(row["capabilities"], {"optionDescriptors": []})
 
 
 class MultiEnvironmentTests(unittest.IsolatedAsyncioTestCase):

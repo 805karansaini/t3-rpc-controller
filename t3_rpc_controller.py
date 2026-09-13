@@ -89,6 +89,11 @@ def project_rows_from_snapshot(snapshot: dict) -> list[dict]:
             "id": project.get("id"),
             "title": project.get("title"),
             "workspaceRoot": project.get("workspaceRoot"),
+            "defaultModelSelection": project.get("defaultModelSelection"),
+            "defaultThreadEnvMode": project.get("defaultThreadEnvMode"),
+            "repositoryIdentity": project.get("repositoryIdentity"),
+            "autoPull": project.get("autoPull"),
+            "scripts": project.get("scripts", []),
         }
         for project in snapshot.get("projects", [])
     ]
@@ -454,6 +459,69 @@ async def search_many_environments(
     return matches, errors
 
 
+def provider_row(provider: dict, environment: str, include_models: bool = True) -> dict:
+    row = {
+        "environment": environment,
+        "instanceId": provider.get("instanceId"),
+        "driver": provider.get("driver"),
+        "displayName": provider.get("displayName"),
+        "enabled": provider.get("enabled"),
+        "installed": provider.get("installed"),
+        "availability": provider.get("availability", "available"),
+        "status": provider.get("status"),
+        "authStatus": (provider.get("auth") or {}).get("status"),
+        "version": provider.get("version"),
+        "message": provider.get("message"),
+        "requiresNewThreadForModelChange": provider.get("requiresNewThreadForModelChange", False),
+        "supportsConversationRollback": provider.get("supportsConversationRollback", False),
+        "reportsContextWindow": provider.get("reportsContextWindow", False),
+        "modelCount": len(provider.get("models", [])),
+    }
+    if include_models:
+        row["models"] = [safe_model_row(model) for model in provider.get("models", [])]
+    return row
+
+
+def safe_model_row(model: dict) -> dict:
+    return {
+        "slug": model.get("slug"),
+        "name": model.get("name"),
+        "shortName": model.get("shortName"),
+        "subProvider": model.get("subProvider"),
+        "aliases": model.get("aliases", []),
+        "isDefault": bool(model.get("isDefault")),
+        "isCustom": bool(model.get("isCustom")),
+        "isLegacy": bool(model.get("isLegacy")),
+        "capabilities": model.get("capabilities"),
+    }
+
+
+async def fetch_providers(store: EnvironmentStore, name: str) -> list[dict]:
+    url, token = store.load(name)
+    config = await rpc_call(url, token, "server.getConfig", {})
+    if not isinstance(config, dict) or not isinstance(config.get("providers"), list):
+        raise RuntimeError("T3 returned an invalid server configuration")
+    return [provider for provider in config["providers"] if isinstance(provider, dict)]
+
+
+async def fetch_many_providers(
+    store: EnvironmentStore,
+    names: list[str],
+) -> tuple[dict[str, list[dict]], dict[str, str]]:
+    results = await asyncio.gather(
+        *(fetch_providers(store, name) for name in names),
+        return_exceptions=True,
+    )
+    output: dict[str, list[dict]] = {}
+    errors: dict[str, str] = {}
+    for name, result in zip(names, results, strict=True):
+        if isinstance(result, BaseException):
+            errors[name] = str(result)
+        else:
+            output[name] = result
+    return output, errors
+
+
 async def list_many_projects(
     store: EnvironmentStore,
     names: list[str],
@@ -594,6 +662,57 @@ def search_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
     return 0 if not errors else 1
 
 
+def providers_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
+    names = store.names() if not args.environment or args.environment == ["all"] else args.environment
+    if not names:
+        raise RuntimeError("no environments configured")
+    providers_by_environment, errors = asyncio.run(fetch_many_providers(store, names))
+    rows = [
+        provider_row(provider, environment)
+        for environment, providers in providers_by_environment.items()
+        for provider in providers
+    ]
+    if not args.include_disabled:
+        rows = [row for row in rows if row.get("enabled") is True]
+    rows.sort(key=lambda row: (str(row.get("environment")), str(row.get("instanceId"))))
+    print(json.dumps({"ok": not errors, "count": len(rows), "providers": rows, "errors": errors}, indent=2))
+    return 0 if not errors else 1
+
+
+def models_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
+    names = store.names() if not args.environment or args.environment == ["all"] else args.environment
+    if not names:
+        raise RuntimeError("no environments configured")
+    providers_by_environment, errors = asyncio.run(fetch_many_providers(store, names))
+    rows = []
+    for environment, providers in providers_by_environment.items():
+        for provider in providers:
+            if args.provider and provider.get("instanceId") != args.provider:
+                continue
+            if not args.include_disabled and provider.get("enabled") is not True:
+                continue
+            for model in provider.get("models", []):
+                rows.append(
+                    {
+                        "environment": environment,
+                        "instanceId": provider.get("instanceId"),
+                        "driver": provider.get("driver"),
+                        "providerStatus": provider.get("status"),
+                        **safe_model_row(model),
+                    }
+                )
+    rows.sort(
+        key=lambda row: (
+            str(row.get("environment")),
+            str(row.get("instanceId")),
+            not bool(row.get("isDefault")),
+            str(row.get("name")),
+        )
+    )
+    print(json.dumps({"ok": not errors, "count": len(rows), "models": rows, "errors": errors}, indent=2))
+    return 0 if not errors else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Native T3 HTTP/WebSocket RPC controller")
     parser.add_argument("--home", type=Path, default=DEFAULT_HOME, help="controller state directory")
@@ -645,6 +764,17 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--environment", action="append")
     search.add_argument("--limit", type=int, default=20, choices=range(1, 51), metavar="1..50")
     search.set_defaults(handler=search_command)
+
+    providers = subparsers.add_parser("providers", help="list provider instances and capabilities")
+    providers.add_argument("--environment", action="append")
+    providers.add_argument("--include-disabled", action="store_true")
+    providers.set_defaults(handler=providers_command)
+
+    models = subparsers.add_parser("models", help="list models available from provider instances")
+    models.add_argument("--environment", action="append")
+    models.add_argument("--provider", help="only return models for this provider instance ID")
+    models.add_argument("--include-disabled", action="store_true")
+    models.set_defaults(handler=models_command)
     return parser
 
 
