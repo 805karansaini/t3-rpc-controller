@@ -8,7 +8,7 @@ Build a command-line controller that lets an agent operate T3 Code on the Mac an
 
 - The controller now covers environment setup, discovery, task dispatch, monitoring, intervention, lifecycle management, history, and diffs.
 - Task creation and submission preserve stable retry identifiers even when dispatch succeeds but confirmation cannot be read, and uncertain replies are reconciled against T3 state.
-- `thread wait` and `thread run` track the exact submitted message, including after a newer turn starts, and return when work completes or needs attention.
+- `thread wait` and `thread run` track the exact submitted message and never infer success from message text. If a newer turn hides the target's final state before it is observed, they return a safe `superseded`/`unknown` result.
 - The native authenticated connection and compatibility checks pass against both configured machines.
 - Version control, repeatable checks, the completed roadmap, and a reviewable decision trail are in place.
 - See `ROADMAP.md` for the ordered checklist and `decisions.tsv` for evidence behind completed checkpoints.
@@ -46,8 +46,8 @@ Credential values are never recorded here. This checkout's connection state live
 | Monitoring | Complete | `thread follow` plus `thread pending` | Snapshot, events, timeout, resume, deduplication, and pending requests covered |
 | Task control | Complete | Live create, model change, task dispatch, completion, stop, and approval response verified | User-question response is schema- and unit-verified; the current Codex mode would not emit a live question request |
 | Lifecycle | Complete | Live rename, archive, pin, snooze, settle, history, diff, and guarded deletion verified | Three disposable build-test threads were removed and confirmed absent |
-| Agent hardening | Complete | JSON schema versioning, bounds, all-output redaction, previews, compatibility checks, a 68-test suite, and both-machine read-only smoke | Operation tests cover creation, recoverable send, task-aware wait, model, stop, requests, organization, deletion, and monitor reconnect/resume/deduplication |
-| Reliability follow-up | Complete | `make setup`, `make check`, `make smoke`, `make live-smoke`, resumed live follow, live wait, and live run preview | Version 0.2.1 preserves retry instructions, honors total follow deadlines, and keeps standalone state outside installed code |
+| Agent hardening | Complete | JSON schema versioning, bounds, all-output redaction, previews, compatibility checks, a 70-test suite, and both-machine read-only smoke | Operation tests cover creation, recoverable send, task-aware wait, model, stop, requests, organization, deletion, and monitor reconnect/resume/deduplication |
+| Reliability follow-up | Complete | `make setup`, `make check`, `make smoke`, `make live-smoke`, resumed live follow, live wait, and live run preview | Version 0.2.2 preserves retry instructions, keeps stream snapshots authoritative, avoids guessing superseded outcomes, bounds WebSocket close time, and keeps standalone state outside installed code |
 
 ## Verified limitations
 

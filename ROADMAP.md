@@ -89,6 +89,8 @@ The work is complete when an agent can use documented commands to identify a mac
 - [x] Recognize an exact completed turn even after a newer turn becomes current.
 - [x] Keep standalone installation state outside `site-packages`.
 - [x] Make resumed monitoring start with a snapshot and include setup and backoff in its deadline.
+- [x] Preserve changed stream snapshots, stop immediately for resumed terminal state, and bound connection cleanup.
+- [x] Return an explicit unknown result when a newer turn hides an older target's final state.
 
 ## Commit rhythm
 

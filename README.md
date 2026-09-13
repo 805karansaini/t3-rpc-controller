@@ -130,7 +130,7 @@ Read the latest turns and detailed state for one exact thread:
 ./t3_rpc_controller.py thread show mac THREAD_ID --turn-limit 20
 ```
 
-Follow one thread as newline-delimited JSON. The first line summarizes the snapshot without repeating message contents, subsequent lines are ordered T3 events, and the final line explains why following stopped:
+Follow one thread as newline-delimited JSON. The first line summarizes the snapshot without repeating message contents, subsequent lines are ordered T3 events, and the final line explains why following stopped. If T3 exposes a changed snapshot while the stream is being established or reconnected, the controller emits that updated summary instead of silently discarding it:
 
 ```bash
 ./t3_rpc_controller.py thread follow mac THREAD_ID --timeout 60
@@ -219,7 +219,7 @@ Wait until a thread finishes or needs approval or input:
 ./t3_rpc_controller.py thread wait mac THREAD_ID --message-id MESSAGE_UUID --timeout 600
 ```
 
-Use the `messageId` returned by `thread send` when waiting for newly submitted work. This prevents an older completed turn from being mistaken for completion of the new task. A pending approval or question returns immediately with `reason: attention-required`. A completed turn exits successfully; an interrupted, failed, or timed-out turn exits with status 1.
+Use the `messageId` returned by `thread send` when waiting for newly submitted work. This prevents an older completed turn from being mistaken for completion of the new task. A pending approval or question returns immediately with `reason: attention-required`. A completed turn exits successfully; an interrupted, failed, timed-out, or superseded turn exits with status 1. `superseded` means a newer turn replaced the target before the controller observed its final state; T3 no longer exposes enough history to label that older result safely, so the controller reports `turnState: unknown` instead of guessing.
 
 Submit and wait in one call when an agent does not need the live event stream:
 

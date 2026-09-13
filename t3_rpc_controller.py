@@ -520,6 +520,7 @@ async def follow_thread(
     emitted_events = 0
     synchronized = False
     initial_snapshot_emitted = False
+    last_snapshot_summary = None
     reconnects = 0
 
     async def within_deadline(awaitable):
@@ -530,22 +531,36 @@ async def follow_thread(
             raise asyncio.TimeoutError
         return await asyncio.wait_for(awaitable, timeout=remaining)
 
-    try:
-        snapshot_timeout = 30 if deadline is None else max(0.001, deadline - time.monotonic())
-        initial = await within_deadline(
-            fetch_thread_snapshot(
-                http_url, token, thread_id, turn_limit, timeout=snapshot_timeout
+    if after_sequence is not None:
+        try:
+            snapshot_timeout = 30 if deadline is None else max(
+                0.001, deadline - time.monotonic()
             )
-        )
-    except asyncio.TimeoutError as error:
-        raise RuntimeError(
-            "T3 thread subscription timed out before initial synchronization"
-        ) from error
-    initial_thread = initial.get("thread") or {}
-    if initial_thread.get("id") != thread_id:
-        raise RuntimeError(f"T3 did not return the requested thread {thread_id}")
-    emit_json(thread_snapshot_summary(initial, environment), flush=True)
-    initial_snapshot_emitted = True
+            initial = await within_deadline(
+                fetch_thread_snapshot(
+                    http_url, token, thread_id, turn_limit, timeout=snapshot_timeout
+                )
+            )
+        except asyncio.TimeoutError as error:
+            raise RuntimeError(
+                "T3 thread subscription timed out before initial synchronization"
+            ) from error
+        initial_thread = initial.get("thread") or {}
+        if initial_thread.get("id") != thread_id:
+            raise RuntimeError(f"T3 did not return the requested thread {thread_id}")
+        last_snapshot_summary = thread_snapshot_summary(initial, environment)
+        emit_json(last_snapshot_summary, flush=True)
+        initial_snapshot_emitted = True
+        if until_terminal and is_terminal_thread_snapshot(initial):
+            return {
+                "kind": "follow-complete",
+                "reason": "terminal-state",
+                "environment": environment,
+                "threadId": thread_id,
+                "lastSequence": last_sequence,
+                "events": emitted_events,
+                "reconnects": reconnects,
+            }
 
     while True:
         if deadline is not None and time.monotonic() >= deadline:
@@ -589,7 +604,9 @@ async def follow_thread(
                 payload["afterSequence"] = last_sequence
             open_timeout = 15 if deadline is None else max(0.001, deadline - time.monotonic())
             async with websockets.connect(
-                websocket_url(http_url, ticket), open_timeout=open_timeout
+                websocket_url(http_url, ticket),
+                open_timeout=open_timeout,
+                close_timeout=0,
             ) as socket:
                 await within_deadline(socket.send(json.dumps({"_tag": "Ping"})))
                 await within_deadline(
@@ -632,12 +649,13 @@ async def follow_thread(
                                     f"T3 did not return the requested thread {thread_id}"
                                 )
                             synchronized = True
-                            if not initial_snapshot_emitted:
-                                emit_json(
-                                    thread_snapshot_summary(item["snapshot"], environment),
-                                    flush=True,
-                                )
+                            snapshot_summary = thread_snapshot_summary(
+                                item["snapshot"], environment
+                            )
+                            if not initial_snapshot_emitted or snapshot_summary != last_snapshot_summary:
+                                emit_json(snapshot_summary, flush=True)
                                 initial_snapshot_emitted = True
+                                last_snapshot_summary = snapshot_summary
                             if until_terminal and is_terminal_thread_snapshot(item["snapshot"]):
                                 return {
                                     "kind": "follow-complete",
@@ -1502,12 +1520,6 @@ async def wait_thread_operation(store: EnvironmentStore, args: argparse.Namespac
             target_turn_id is not None and latest_turn_id == target_turn_id
         )
         target_state = latest_state if matches_target else None
-        if target_message_id and target_turn_id and target_state is None:
-            if any(
-                message.get("role") == "assistant" and message.get("turnId") == target_turn_id
-                for message in thread.get("messages", [])
-            ):
-                target_state = "completed"
         if target_state in {"completed", "interrupted", "error"}:
             ok = target_state == "completed"
             return {
@@ -1519,6 +1531,19 @@ async def wait_thread_operation(store: EnvironmentStore, args: argparse.Namespac
                 "messageId": target_message_id,
                 "turnId": target_turn_id or latest_turn_id,
                 "turnState": target_state,
+                "thread": thread_row(thread, args.environment),
+            }
+
+        if target_message_id and target_turn_id and latest_turn_id != target_turn_id:
+            return {
+                "ok": False,
+                "operation": "thread.wait",
+                "reason": "superseded",
+                "environment": args.environment,
+                "threadId": args.thread_id,
+                "messageId": target_message_id,
+                "turnId": target_turn_id,
+                "turnState": "unknown",
                 "thread": thread_row(thread, args.environment),
             }
 

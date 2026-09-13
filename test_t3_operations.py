@@ -106,6 +106,126 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["lastSequence"], 2)
         self.assertEqual(second.request_payload["afterSequence"], 1)
         self.assertEqual(connect.call_count, 2)
+        self.assertEqual(connect.call_args_list[0].kwargs["close_timeout"], 0)
+
+    async def test_resumed_follow_emits_changed_subscription_snapshot(self):
+        class Store:
+            @staticmethod
+            def load(environment):
+                return "http://fake", "fake-token"
+
+        class Socket:
+            request_id = None
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                return False
+
+            async def send(self, raw):
+                message = json.loads(raw)
+                if message.get("_tag") == "Request":
+                    self.request_id = message["id"]
+
+            async def recv(self):
+                if self.request_id:
+                    request_id, self.request_id = self.request_id, None
+                    return json.dumps(
+                        {
+                            "_tag": "Chunk",
+                            "requestId": request_id,
+                            "values": [
+                                {
+                                    "kind": "snapshot",
+                                    "snapshot": {
+                                        "snapshotSequence": 12,
+                                        "thread": {
+                                            "id": "t1",
+                                            "title": "after",
+                                            "messages": [],
+                                            "activities": [],
+                                        },
+                                    },
+                                }
+                            ],
+                        }
+                    )
+                raise asyncio.TimeoutError()
+
+        before = {
+            "snapshotSequence": 11,
+            "thread": {
+                "id": "t1",
+                "title": "before",
+                "messages": [],
+                "activities": [],
+            },
+        }
+        output = io.StringIO()
+        with (
+            patch(
+                "t3_rpc_controller.fetch_thread_snapshot",
+                new=AsyncMock(return_value=before),
+            ),
+            patch("t3_rpc_controller.asyncio.to_thread", new=AsyncMock(return_value={"ticket": "t"})),
+            patch("t3_rpc_controller.websockets.connect", return_value=Socket()),
+            redirect_stdout(output),
+        ):
+            result = await follow_thread(
+                Store(),
+                "mac",
+                "t1",
+                after_sequence=10,
+                timeout=1,
+                max_events=None,
+                retries=0,
+                until_terminal=False,
+                turn_limit=20,
+            )
+        snapshots = [
+            line for line in map(json.loads, output.getvalue().splitlines())
+            if line.get("kind") == "snapshot"
+        ]
+        self.assertEqual([row["thread"]["title"] for row in snapshots], ["before", "after"])
+        self.assertEqual(result["reason"], "timeout")
+
+    async def test_resumed_follow_stops_on_prefetched_terminal_snapshot(self):
+        class Store:
+            @staticmethod
+            def load(environment):
+                return "http://fake", "fake-token"
+
+        terminal = {
+            "thread": {
+                "id": "t1",
+                "messages": [],
+                "activities": [],
+                "latestTurn": {"state": "completed"},
+                "session": {"status": "ready"},
+            }
+        }
+        with (
+            patch(
+                "t3_rpc_controller.fetch_thread_snapshot",
+                new=AsyncMock(return_value=terminal),
+            ),
+            patch("t3_rpc_controller.websockets.connect") as connect,
+            redirect_stdout(io.StringIO()),
+        ):
+            result = await follow_thread(
+                Store(),
+                "mac",
+                "t1",
+                after_sequence=10,
+                timeout=1,
+                max_events=None,
+                retries=0,
+                until_terminal=True,
+                turn_limit=20,
+            )
+        self.assertEqual(result["reason"], "terminal-state")
+        connect.assert_not_called()
 
     async def test_follow_requires_initial_synchronization(self):
         class Store:
@@ -296,7 +416,7 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["reason"], "attention-required")
         self.assertEqual(result["pending"][0]["requestId"], "approval-1")
 
-    async def test_wait_recognizes_target_completion_after_a_newer_turn(self):
+    async def test_wait_reports_unknown_when_target_was_superseded(self):
         message_id = "22222222-2222-4222-8222-222222222222"
         thread = {
             "id": "t1",
@@ -319,9 +439,10 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
             new=AsyncMock(return_value={"thread": thread}),
         ):
             result = await wait_thread_operation(object(), command_args)
-        self.assertTrue(result["ok"])
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "superseded")
         self.assertEqual(result["turnId"], "target-turn")
-        self.assertEqual(result["turnState"], "completed")
+        self.assertEqual(result["turnState"], "unknown")
 
     async def test_confirmation_failure_preserves_generated_create_retry_ids(self):
         command_args = args(
