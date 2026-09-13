@@ -215,6 +215,19 @@ Rename a thread, or move it into and out of T3's archive:
 
 Each command refuses an incompatible current state and confirms the new title or archive location before returning success.
 
+Organize an active thread without deleting it:
+
+```bash
+./t3_rpc_controller.py thread pin mac THREAD_ID
+./t3_rpc_controller.py thread unpin mac THREAD_ID
+./t3_rpc_controller.py thread snooze mac THREAD_ID --until 2026-09-14T09:00:00+05:30
+./t3_rpc_controller.py thread unsnooze mac THREAD_ID
+./t3_rpc_controller.py thread settle mac THREAD_ID
+./t3_rpc_controller.py thread unsettle mac THREAD_ID
+```
+
+Snooze times must be in the future and include a timezone. Every command confirms the corresponding T3 state before it reports success.
+
 Run tests:
 
 ```bash

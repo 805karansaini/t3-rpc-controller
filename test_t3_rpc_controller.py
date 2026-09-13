@@ -26,6 +26,7 @@ from t3_rpc_controller import (
     make_request,
     merge_environment_projects,
     normalize_url,
+    normalize_future_datetime,
     oauth_exchange_payload,
     provider_row,
     project_rows_from_snapshot,
@@ -353,6 +354,14 @@ class RpcProtocolTests(unittest.TestCase):
         archive = build_thread_lifecycle_command("t1", "archive")
         self.assertEqual(archive["type"], "thread.archive")
         self.assertEqual(archive["threadId"], "t1")
+
+    def test_normalizes_future_snooze_time_and_rejects_naive_time(self):
+        self.assertEqual(
+            normalize_future_datetime("2099-01-01T05:30:00+05:30"),
+            "2099-01-01T00:00:00.000Z",
+        )
+        with self.assertRaisesRegex(ValueError, "timezone"):
+            normalize_future_datetime("2099-01-01T00:00:00")
 
     def test_builds_turn_interrupt_and_session_stop_commands(self):
         interrupt = build_thread_stop_command("t1", "turn-1", False)

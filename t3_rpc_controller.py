@@ -251,6 +251,20 @@ def build_thread_lifecycle_command(thread_id: str, action: str, **fields: object
     }
 
 
+def normalize_future_datetime(value: str) -> str:
+    candidate = value.strip()
+    try:
+        parsed = datetime.fromisoformat(candidate.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError("snooze time must be an ISO 8601 date and time with a timezone") from error
+    if parsed.tzinfo is None:
+        raise ValueError("snooze time must include a timezone")
+    parsed_utc = parsed.astimezone(timezone.utc)
+    if parsed_utc <= datetime.now(timezone.utc):
+        raise ValueError("snooze time must be in the future")
+    return parsed_utc.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
 def build_thread_stop_command(thread_id: str, turn_id: str | None, stop_session: bool) -> dict:
     command = {
         "type": "thread.session.stop" if stop_session else "thread.turn.interrupt",
@@ -1185,6 +1199,50 @@ async def archive_thread_operation(
     }
 
 
+async def thread_state_operation(
+    store: EnvironmentStore,
+    args: argparse.Namespace,
+    action: str,
+) -> dict:
+    before = await require_thread_snapshot(store, args.environment, args.thread_id)
+    thread = before["thread"]
+    state_fields = {
+        "pin": ("pinnedAt", True),
+        "unpin": ("pinnedAt", False),
+        "snooze": ("snoozedUntil", True),
+        "unsnooze": ("snoozedUntil", False),
+        "settle": ("settledAt", True),
+        "unsettle": ("settledAt", False),
+    }
+    field, should_be_set = state_fields[action]
+    is_set = thread.get(field) is not None
+    if is_set == should_be_set:
+        state = "already set" if should_be_set else "already clear"
+        raise ValueError(f"thread {args.thread_id} has {field} {state}")
+    extra: dict[str, object] = {}
+    if action == "snooze":
+        extra["snoozedUntil"] = normalize_future_datetime(args.until)
+    elif action in {"unsnooze", "unsettle"}:
+        extra["reason"] = "user"
+    command = build_thread_lifecycle_command(args.thread_id, action, **extra)
+    receipt = await dispatch_command(store, args.environment, command)
+    deadline = time.monotonic() + 10
+    while True:
+        confirmed = await require_thread_snapshot(store, args.environment, args.thread_id)
+        if (confirmed["thread"].get(field) is not None) == should_be_set:
+            break
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"T3 did not confirm {field} for thread {args.thread_id}")
+        await asyncio.sleep(0.2)
+    return {
+        "ok": True,
+        "operation": command["type"],
+        "commandId": command["commandId"],
+        "receipt": receipt,
+        "thread": thread_row(confirmed["thread"], args.environment),
+    }
+
+
 async def stop_thread_operation(store: EnvironmentStore, args: argparse.Namespace) -> dict:
     before = await require_thread_snapshot(store, args.environment, args.thread_id)
     thread = before["thread"]
@@ -1507,6 +1565,12 @@ def thread_unarchive_command(store: EnvironmentStore, args: argparse.Namespace) 
     return 0
 
 
+def thread_state_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
+    result = asyncio.run(thread_state_operation(store, args, args.thread_command))
+    print(json.dumps(result, indent=2))
+    return 0
+
+
 def thread_pending_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
     snapshot = asyncio.run(
         require_thread_snapshot(store, args.environment, args.thread_id, args.turn_limit)
@@ -1722,6 +1786,24 @@ def build_parser() -> argparse.ArgumentParser:
     thread_unarchive.add_argument("environment")
     thread_unarchive.add_argument("thread_id")
     thread_unarchive.set_defaults(handler=thread_unarchive_command)
+
+    for action, help_text in (
+        ("pin", "pin a thread"),
+        ("unpin", "remove a thread from the pinned group"),
+        ("unsnooze", "wake a snoozed thread now"),
+        ("settle", "move a thread to the settled shelf"),
+        ("unsettle", "return a settled thread to the active list"),
+    ):
+        state_parser = thread_commands.add_parser(action, help=help_text)
+        state_parser.add_argument("environment")
+        state_parser.add_argument("thread_id")
+        state_parser.set_defaults(handler=thread_state_command)
+
+    thread_snooze = thread_commands.add_parser("snooze", help="snooze a thread until a future time")
+    thread_snooze.add_argument("environment")
+    thread_snooze.add_argument("thread_id")
+    thread_snooze.add_argument("--until", required=True, help="ISO 8601 date and time with timezone")
+    thread_snooze.set_defaults(handler=thread_state_command)
 
     thread_pending = thread_commands.add_parser("pending", help="list unresolved approvals and questions")
     thread_pending.add_argument("environment")
