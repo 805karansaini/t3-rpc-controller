@@ -1,9 +1,11 @@
 import json
+import io
 import os
 import stat
 import tempfile
 import unittest
 from pathlib import Path
+from contextlib import redirect_stdout
 from unittest.mock import AsyncMock, patch
 
 from t3_rpc_controller import (
@@ -22,6 +24,7 @@ from t3_rpc_controller import (
     build_user_input_response_command,
     build_parser,
     dry_run_result,
+    emit_json,
     filter_thread_rows,
     first_shell_snapshot,
     first_stream_snapshot,
@@ -40,6 +43,8 @@ from t3_rpc_controller import (
     thread_snapshot_summary,
     model_selection,
     pending_requests_from_thread,
+    request_response_outcome,
+    require_codex_provider,
     read_prompt,
     read_json_object,
     redact_sensitive,
@@ -389,6 +394,19 @@ class RpcProtocolTests(unittest.TestCase):
         self.assertNotIn("abc123", redacted["message"])
         self.assertNotIn("ticket123", redacted["message"])
 
+    def test_normal_json_output_redacts_nested_thread_content(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            emit_json(
+                {
+                    "messages": [{"text": "Bearer private-value"}],
+                    "activities": [{"payload": {"credential": "private-value"}}],
+                }
+            )
+        rendered = output.getvalue()
+        self.assertNotIn("private-value", rendered)
+        self.assertIn("[REDACTED]", rendered)
+
     def test_dry_run_hides_task_and_answer_contents(self):
         command = build_turn_start_command(
             thread_id="t1",
@@ -448,6 +466,24 @@ class RpcProtocolTests(unittest.TestCase):
         }
         pending = pending_requests_from_thread(thread)
         self.assertEqual([item["requestId"] for item in pending], ["q1"])
+
+    def test_failed_response_stays_pending_and_is_not_success(self):
+        thread = {
+            "activities": [
+                {"kind": "approval.requested", "payload": {"requestId": "a1"}},
+                {
+                    "kind": "provider.approval.respond.failed",
+                    "payload": {"requestId": "a1", "detail": "stale pending"},
+                },
+            ]
+        }
+        self.assertEqual([item["requestId"] for item in pending_requests_from_thread(thread)], ["a1"])
+        self.assertEqual(request_response_outcome(thread, "a1", "approval.requested"), "failed")
+
+    def test_live_task_provider_is_restricted_to_codex(self):
+        require_codex_provider("codex")
+        with self.assertRaisesRegex(ValueError, "restricted to provider instance codex"):
+            require_codex_provider("claude")
 
     def test_builds_approval_and_user_input_responses(self):
         approval = build_approval_response_command("t1", "a1", "accept")

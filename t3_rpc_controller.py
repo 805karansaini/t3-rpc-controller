@@ -20,6 +20,7 @@ import websockets
 ENV_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 DEFAULT_HOME = Path(__file__).resolve().parent / ".state"
 SENSITIVE_KEY_RE = re.compile(r"token|ticket|authorization|cookie|credential|secret", re.I)
+CODEX_PROVIDER_INSTANCE = "codex"
 
 
 class EnvironmentStore:
@@ -145,6 +146,17 @@ def positive_int(value: str) -> int:
     if parsed < 1:
         raise argparse.ArgumentTypeError("must be one or greater")
     return parsed
+
+
+def emit_json(value: object, *, indent: int | None = None, flush: bool = False) -> None:
+    print(json.dumps(redact_sensitive(value), indent=indent), flush=flush)
+
+
+def require_codex_provider(instance_id: str) -> None:
+    if instance_id != CODEX_PROVIDER_INSTANCE:
+        raise ValueError(
+            f"live task execution is restricted to provider instance {CODEX_PROVIDER_INSTANCE}"
+        )
 
 
 def nonnegative_float(value: str) -> float:
@@ -381,14 +393,30 @@ def pending_requests_from_thread(thread: dict) -> list[dict]:
             }
         elif kind in {"approval.resolved", "user-input.resolved"}:
             pending.pop(request_id, None)
-        elif kind in {
-            "provider.approval.respond.failed",
-            "provider.user-input.respond.failed",
-        }:
-            detail = str(payload.get("detail", "")).lower()
-            if "stale pending" in detail or "unknown pending" in detail:
-                pending.pop(request_id, None)
     return sorted(pending.values(), key=lambda item: str(item.get("createdAt", "")))
+
+
+def request_response_outcome(thread: dict, request_id: str, requested_kind: str) -> str:
+    resolved_kind = (
+        "approval.resolved" if requested_kind == "approval.requested" else "user-input.resolved"
+    )
+    failed_kind = (
+        "provider.approval.respond.failed"
+        if requested_kind == "approval.requested"
+        else "provider.user-input.respond.failed"
+    )
+    for activity in reversed(thread.get("activities", [])):
+        if not isinstance(activity, dict) or not isinstance(activity.get("payload"), dict):
+            continue
+        if activity["payload"].get("requestId") != request_id:
+            continue
+        if activity.get("kind") == resolved_kind:
+            return "resolved"
+        if activity.get("kind") == failed_kind:
+            return "failed"
+        if activity.get("kind") == requested_kind:
+            return "pending"
+    return "unknown"
 
 
 def build_approval_response_command(
@@ -798,8 +826,8 @@ async def follow_thread(
                             continue
                         if item.get("kind") == "snapshot" and isinstance(item.get("snapshot"), dict):
                             synchronized = True
-                            print(
-                                json.dumps(thread_snapshot_summary(item["snapshot"], environment)),
+                            emit_json(
+                                thread_snapshot_summary(item["snapshot"], environment),
                                 flush=True,
                             )
                             if until_terminal and is_terminal_thread_snapshot(item["snapshot"]):
@@ -815,15 +843,13 @@ async def follow_thread(
                             continue
                         if item.get("kind") == "synchronized":
                             synchronized = True
-                            print(
-                                json.dumps(
-                                    {
-                                        "kind": "synchronized",
-                                        "environment": environment,
-                                        "threadId": thread_id,
-                                        "lastSequence": last_sequence,
-                                    }
-                                ),
+                            emit_json(
+                                {
+                                    "kind": "synchronized",
+                                    "environment": environment,
+                                    "threadId": thread_id,
+                                    "lastSequence": last_sequence,
+                                },
                                 flush=True,
                             )
                             continue
@@ -842,7 +868,7 @@ async def follow_thread(
                             last_sequence = sequence
                         emitted_events += 1
                         output_item = {"environment": environment, "threadId": thread_id, **item}
-                        print(json.dumps(output_item), flush=True)
+                        emit_json(output_item, flush=True)
                         if max_events is not None and emitted_events >= max_events:
                             return {
                                 "kind": "follow-complete",
@@ -1033,6 +1059,7 @@ async def validate_project_and_model(
     instance_id: str,
     model_slug: str,
 ) -> tuple[dict, dict, dict]:
+    require_codex_provider(instance_id)
     url, token = store.load(environment)
     shell, providers = await asyncio.gather(
         fetch_shell_snapshot(url, token),
@@ -1062,6 +1089,7 @@ async def validate_model(
     instance_id: str,
     model_slug: str,
 ) -> tuple[dict, dict]:
+    require_codex_provider(instance_id)
     providers = await fetch_providers(store, environment)
     provider = next((item for item in providers if item.get("instanceId") == instance_id), None)
     if provider is None:
@@ -1173,7 +1201,15 @@ async def create_thread_operation(store: EnvironmentStore, args: argparse.Namesp
         store,
         args.environment,
         thread_id,
-        lambda thread: thread.get("modelSelection") == command["modelSelection"],
+        lambda thread: (
+            thread.get("projectId") == command["projectId"]
+            and thread.get("title") == command["title"]
+            and thread.get("modelSelection") == command["modelSelection"]
+            and thread.get("runtimeMode") == command["runtimeMode"]
+            and thread.get("interactionMode") == command["interactionMode"]
+            and thread.get("branch") == command["branch"]
+            and thread.get("worktreePath") == command["worktreePath"]
+        ),
     )
     return {
         "ok": True,
@@ -1203,12 +1239,14 @@ def read_prompt(message: str | None, prompt_file: str | None) -> str:
 async def send_thread_operation(store: EnvironmentStore, args: argparse.Namespace, text: str) -> dict:
     before = await require_thread_snapshot(store, args.environment, args.thread_id)
     thread = before["thread"]
+    current_selection = thread.get("modelSelection") or {}
+    require_codex_provider(args.provider or current_selection.get("instanceId", ""))
     selection = None
     if bool(args.provider) != bool(args.model):
         raise ValueError("--provider and --model must be supplied together")
     if args.provider and args.model:
         provider, _ = await validate_model(store, args.environment, args.provider, args.model)
-        current = thread.get("modelSelection") or {}
+        current = current_selection
         if (
             provider.get("requiresNewThreadForModelChange") is True
             and current.get("model") != args.model
@@ -1218,7 +1256,7 @@ async def send_thread_operation(store: EnvironmentStore, args: argparse.Namespac
     command = build_turn_start_command(
         thread_id=args.thread_id,
         text=text,
-        runtime_mode=args.runtime_mode or thread.get("runtimeMode") or "full-access",
+        runtime_mode=args.runtime_mode or thread.get("runtimeMode") or "approval-required",
         interaction_mode=args.interaction_mode or thread.get("interactionMode") or "default",
         selection=selection,
     )
@@ -1363,7 +1401,13 @@ async def thread_state_operation(
     deadline = time.monotonic() + 10
     while True:
         confirmed = await require_thread_snapshot(store, args.environment, args.thread_id)
-        if (confirmed["thread"].get(field) is not None) == should_be_set:
+        confirmed_value = confirmed["thread"].get(field)
+        matches = (
+            confirmed_value == extra.get("snoozedUntil")
+            if action == "snooze"
+            else (confirmed_value is not None) == should_be_set
+        )
+        if matches:
             break
         if time.monotonic() >= deadline:
             raise RuntimeError(f"T3 did not confirm {field} for thread {args.thread_id}")
@@ -1440,7 +1484,6 @@ async def stop_thread_operation(store: EnvironmentStore, args: argparse.Namespac
     receipt = await dispatch_command(store, args.environment, command)
     if args.session:
         predicate = lambda current: (current.get("session") or {}).get("status") in {
-            None,
             "stopped",
             "error",
         }
@@ -1478,16 +1521,17 @@ async def wait_for_request_cleared(
     environment: str,
     thread_id: str,
     request_id: str,
+    requested_kind: str,
     timeout: float = 10,
 ) -> dict:
     deadline = time.monotonic() + timeout
     while True:
         snapshot = await require_thread_snapshot(store, environment, thread_id, 20)
-        if not any(
-            item.get("requestId") == request_id
-            for item in pending_requests_from_thread(snapshot["thread"])
-        ):
+        outcome = request_response_outcome(snapshot["thread"], request_id, requested_kind)
+        if outcome == "resolved":
             return snapshot
+        if outcome == "failed":
+            raise RuntimeError(f"T3 rejected the response for request {request_id}")
         if time.monotonic() >= deadline:
             raise RuntimeError(f"T3 did not confirm resolution of request {request_id}")
         await asyncio.sleep(0.2)
@@ -1505,6 +1549,7 @@ async def approval_response_operation(store: EnvironmentStore, args: argparse.Na
         args.environment,
         args.thread_id,
         args.request_id,
+        "approval.requested",
     )
     return {
         "ok": True,
@@ -1557,6 +1602,7 @@ async def user_input_response_operation(
         args.environment,
         args.thread_id,
         args.request_id,
+        "user-input.requested",
     )
     result = {
         "ok": True,
@@ -1680,7 +1726,7 @@ def configure_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
     if not token:
         raise ValueError("bearer token cannot be empty")
     store.save(args.name, args.url, token)
-    print(json.dumps({"configured": args.name, "url": normalize_url(args.url)}))
+    emit_json({"configured": args.name, "url": normalize_url(args.url)})
     return 0
 
 
@@ -1698,7 +1744,7 @@ def pair_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
     if session.get("authenticated") is not True:
         raise RuntimeError("issued T3 bearer session failed verification")
     store.save(args.name, url, token)
-    print(json.dumps({"paired": args.name, "url": url, "authenticated": True}))
+    emit_json({"paired": args.name, "url": url, "authenticated": True})
     return 0
 
 
@@ -1708,28 +1754,24 @@ def remove_environment_command(store: EnvironmentStore, args: argparse.Namespace
     if args.name not in store.names():
         raise KeyError(f"unknown environment: {args.name}")
     if args.dry_run:
-        print(
-            json.dumps(
-                {
-                    "ok": True,
-                    "dryRun": True,
-                    "operation": "environment.remove",
-                    "planned": {"environment": args.name, "recoverableBackup": True},
-                },
-                indent=2,
-            )
-        )
-        return 0
-    backup = store.remove(args.name)
-    print(
-        json.dumps(
+        emit_json(
             {
                 "ok": True,
-                "removed": args.name,
-                "recoverableBackup": str(backup),
+                "dryRun": True,
+                "operation": "environment.remove",
+                "planned": {"environment": args.name, "recoverableBackup": True},
             },
             indent=2,
         )
+        return 0
+    backup = store.remove(args.name)
+    emit_json(
+        {
+            "ok": True,
+            "removed": args.name,
+            "recoverableBackup": str(backup),
+        },
+        indent=2,
     )
     return 0
 
@@ -1746,7 +1788,7 @@ def projects_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
         "projects": merge_environment_projects(projects_by_environment),
         "errors": errors,
     }
-    print(json.dumps(result, indent=2))
+    emit_json(result, indent=2)
     return 0 if not errors else 1
 
 
@@ -1756,7 +1798,7 @@ def health_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
         raise RuntimeError("no environments configured")
     rows = asyncio.run(check_many_environments(store, names))
     ok = all(row.get("authenticated") is True and row.get("rpc") is True for row in rows)
-    print(json.dumps({"ok": ok, "environments": rows}, indent=2))
+    emit_json({"ok": ok, "environments": rows}, indent=2)
     return 0 if ok else 1
 
 
@@ -1766,7 +1808,7 @@ def compatibility_command(store: EnvironmentStore, args: argparse.Namespace) -> 
         raise RuntimeError("no environments configured")
     rows = asyncio.run(check_many_compatibility(store, names))
     ok = all(row.get("compatible") is True for row in rows)
-    print(json.dumps({"ok": ok, "environments": rows}, indent=2))
+    emit_json({"ok": ok, "environments": rows}, indent=2)
     return 0 if ok else 1
 
 
@@ -1785,14 +1827,14 @@ def threads_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
         "threads": rows,
         "errors": errors,
     }
-    print(json.dumps(result, indent=2))
+    emit_json(result, indent=2)
     return 0 if not errors else 1
 
 
 def thread_show_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
     url, token = store.load(args.environment)
     snapshot = asyncio.run(fetch_thread_snapshot(url, token, args.thread_id, args.turn_limit))
-    print(json.dumps({"ok": True, "environment": args.environment, **snapshot}, indent=2))
+    emit_json({"ok": True, "environment": args.environment, **snapshot}, indent=2)
     return 0
 
 
@@ -1810,56 +1852,56 @@ def thread_follow_command(store: EnvironmentStore, args: argparse.Namespace) -> 
             turn_limit=args.turn_limit,
         )
     )
-    print(json.dumps(result), flush=True)
+    emit_json(result, flush=True)
     return 0
 
 
 def thread_create_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
     result = asyncio.run(create_thread_operation(store, args))
-    print(json.dumps(result, indent=2))
+    emit_json(result, indent=2)
     return 0
 
 
 def thread_send_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
     text = read_prompt(args.message, args.prompt_file)
     result = asyncio.run(send_thread_operation(store, args, text))
-    print(json.dumps(result, indent=2))
+    emit_json(result, indent=2)
     return 0
 
 
 def thread_model_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
     result = asyncio.run(set_thread_model_operation(store, args))
-    print(json.dumps(result, indent=2))
+    emit_json(result, indent=2)
     return 0
 
 
 def thread_rename_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
     result = asyncio.run(rename_thread_operation(store, args))
-    print(json.dumps(result, indent=2))
+    emit_json(result, indent=2)
     return 0
 
 
 def thread_archive_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
     result = asyncio.run(archive_thread_operation(store, args, True))
-    print(json.dumps(result, indent=2))
+    emit_json(result, indent=2)
     return 0
 
 
 def thread_unarchive_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
     result = asyncio.run(archive_thread_operation(store, args, False))
-    print(json.dumps(result, indent=2))
+    emit_json(result, indent=2)
     return 0
 
 
 def thread_state_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
     result = asyncio.run(thread_state_operation(store, args, args.thread_command))
-    print(json.dumps(result, indent=2))
+    emit_json(result, indent=2)
     return 0
 
 
 def thread_delete_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
     result = asyncio.run(delete_thread_operation(store, args))
-    print(json.dumps(result, indent=2))
+    emit_json(result, indent=2)
     return 0
 
 
@@ -1868,26 +1910,24 @@ def thread_history_command(store: EnvironmentStore, args: argparse.Namespace) ->
         require_thread_snapshot(store, args.environment, args.thread_id, args.turn_limit)
     )
     thread = snapshot["thread"]
-    print(
-        json.dumps(
-            {
-                "ok": True,
-                "environment": args.environment,
-                "threadId": args.thread_id,
-                "messages": thread.get("messages", []),
-                "activities": thread.get("activities", []),
-                "checkpoints": thread.get("checkpoints", []),
-                "proposedPlans": thread.get("proposedPlans", []),
-            },
-            indent=2,
-        )
+    emit_json(
+        {
+            "ok": True,
+            "environment": args.environment,
+            "threadId": args.thread_id,
+            "messages": thread.get("messages", []),
+            "activities": thread.get("activities", []),
+            "checkpoints": thread.get("checkpoints", []),
+            "proposedPlans": thread.get("proposedPlans", []),
+        },
+        indent=2,
     )
     return 0
 
 
 def thread_diff_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
     result = asyncio.run(thread_diff_operation(store, args))
-    print(json.dumps(result, indent=2))
+    emit_json(result, indent=2)
     return 0
 
 
@@ -1896,43 +1936,41 @@ def thread_pending_command(store: EnvironmentStore, args: argparse.Namespace) ->
         require_thread_snapshot(store, args.environment, args.thread_id, args.turn_limit)
     )
     pending = pending_requests_from_thread(snapshot["thread"])
-    print(
-        json.dumps(
-            {
-                "ok": True,
-                "environment": args.environment,
-                "threadId": args.thread_id,
-                "count": len(pending),
-                "pending": pending,
-            },
-            indent=2,
-        )
+    emit_json(
+        {
+            "ok": True,
+            "environment": args.environment,
+            "threadId": args.thread_id,
+            "count": len(pending),
+            "pending": pending,
+        },
+        indent=2,
     )
     return 0
 
 
 def thread_stop_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
     result = asyncio.run(stop_thread_operation(store, args))
-    print(json.dumps(result, indent=2))
+    emit_json(result, indent=2)
     return 0
 
 
 def thread_approve_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
     result = asyncio.run(approval_response_operation(store, args))
-    print(json.dumps(result, indent=2))
+    emit_json(result, indent=2)
     return 0
 
 
 def thread_answer_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
     answers = read_json_object(args.answers_json, args.answers_file)
     result = asyncio.run(user_input_response_operation(store, args, answers, False))
-    print(json.dumps(result, indent=2))
+    emit_json(result, indent=2)
     return 0
 
 
 def thread_dismiss_input_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
     result = asyncio.run(user_input_response_operation(store, args, None, True))
-    print(json.dumps(result, indent=2))
+    emit_json(result, indent=2)
     return 0
 
 
@@ -1942,7 +1980,7 @@ def search_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
         raise RuntimeError("no environments configured")
     matches, errors = asyncio.run(search_many_environments(store, names, args.query, args.limit))
     matches.sort(key=lambda match: str(match.get("messageCreatedAt", "")), reverse=True)
-    print(json.dumps({"ok": not errors, "count": len(matches), "matches": matches, "errors": errors}, indent=2))
+    emit_json({"ok": not errors, "count": len(matches), "matches": matches, "errors": errors}, indent=2)
     return 0 if not errors else 1
 
 
@@ -1959,7 +1997,7 @@ def providers_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
     if not args.include_disabled:
         rows = [row for row in rows if row.get("enabled") is True]
     rows.sort(key=lambda row: (str(row.get("environment")), str(row.get("instanceId"))))
-    print(json.dumps({"ok": not errors, "count": len(rows), "providers": rows, "errors": errors}, indent=2))
+    emit_json({"ok": not errors, "count": len(rows), "providers": rows, "errors": errors}, indent=2)
     return 0 if not errors else 1
 
 
@@ -1993,7 +2031,7 @@ def models_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
             str(row.get("name")),
         )
     )
-    print(json.dumps({"ok": not errors, "count": len(rows), "models": rows, "errors": errors}, indent=2))
+    emit_json({"ok": not errors, "count": len(rows), "models": rows, "errors": errors}, indent=2)
     return 0 if not errors else 1
 
 
@@ -2038,7 +2076,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     environments = subparsers.add_parser("environments", help="list configured environments")
     environments.set_defaults(
-        handler=lambda store, args: print(json.dumps(safe_environment_config(store), indent=2)) or 0
+        handler=lambda store, args: emit_json(safe_environment_config(store), indent=2) or 0
     )
 
     health = subparsers.add_parser("health", help="check authentication and RPC access")
@@ -2090,7 +2128,7 @@ def build_parser() -> argparse.ArgumentParser:
     thread_create.add_argument(
         "--runtime-mode",
         choices=["approval-required", "auto-accept-edits", "auto", "full-access"],
-        default="full-access",
+        default="approval-required",
     )
     thread_create.add_argument("--interaction-mode", choices=["default", "plan"], default="default")
     thread_create.add_argument("--branch")

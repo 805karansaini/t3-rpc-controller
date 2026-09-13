@@ -210,7 +210,7 @@ Answer a pending question with a JSON object keyed by T3's question IDs, or dism
 ./t3_rpc_controller.py thread dismiss-input mac THREAD_ID REQUEST_ID
 ```
 
-Live task execution is intentionally limited to the `codex` provider. The controller can still discover other configured providers, but its live task examples and verification use only Codex on the Mac and i7 environments.
+Live task execution is limited to the `codex` provider and this is enforced by thread creation, model changes, and task sending. A task cannot silently continue on a non-Codex thread. The controller can still list other configured providers for read-only discovery.
 
 Rename a thread, or move it into and out of T3's archive:
 
@@ -302,14 +302,14 @@ If a stored credential expires, run `pair` again with the same environment name;
 
 Removal takes the environment out of active configuration and moves its local metadata and credential into a protected `.state/removed/` backup, so an accidental removal is recoverable on this machine.
 
-All successful commands return JSON. Operational failures also return JSON on standard error with a stable category and exit status 1; invalid command usage returns category `usage` and exit status 2. Server error bodies, bearer values, WebSocket tickets, pairing values, and other credential-like fields are not included in errors.
+All successful commands return JSON. Operational failures also return JSON on standard error with a stable category and exit status 1; invalid command usage returns category `usage` and exit status 2. Server errors, thread history, activities, search results, and live events all pass through the same credential redaction before output.
 
 Every thread-changing command, plus environment removal, accepts `--dry-run`. The controller still validates the named environment, project, thread, provider, model, current state, and confirmation values, but does not dispatch the change. Task text and answer contents are replaced by lengths or question IDs in the preview.
 
 ## Guidance for another agent
 
 1. Work from `/Users/karansaini/Projects/t3-rpc-controller`.
-2. Run `python3 -m unittest -v test_t3_rpc_controller.py` before and after protocol changes.
+2. Run `make check` before and after protocol changes.
 3. Use `./t3_rpc_controller.py environments` to discover configured targets without reading `.state/tokens`.
 4. Begin with read-only `projects` queries. Do not mutate a thread until environment, project ID/path, thread ID, provider instance, model, and current thread state are explicitly verified.
 5. Treat `127.0.0.1:3773` as the Mac only; it never refers to the i7.
@@ -321,4 +321,4 @@ Every thread-changing command, plus environment removal, accepts `--dry-run`. Th
 
 ## Current scope
 
-The executable provides environment setup, project/thread/provider/model discovery, task creation and dispatch, live monitoring, stopping, approvals, and user-input handling. Thread organization and deletion commands are the next build phase; see `ROADMAP.md` for the authoritative checklist.
+The executable provides environment setup, project/thread/provider/model discovery, Codex-only task creation and dispatch, live monitoring with reconnect and resume, stopping, approvals, user-input handling, thread organization, history, diffs, and guarded deletion. `ROADMAP.md` is the completed implementation checklist.

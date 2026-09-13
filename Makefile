@@ -22,7 +22,7 @@ test:
 	$(PYTHON) -m unittest -v
 
 check:
-	$(PYTHON) -m py_compile t3_rpc_controller.py test_t3_rpc_controller.py test_t3_transport.py
+	$(PYTHON) -m py_compile t3_rpc_controller.py test_t3_rpc_controller.py test_t3_operations.py test_t3_transport.py
 	$(MAKE) test
 
 smoke:
