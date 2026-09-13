@@ -24,7 +24,7 @@ test: setup
 	$(VENV_PYTHON) -m unittest -v
 
 check: setup
-	$(VENV_PYTHON) -m py_compile t3_rpc_controller.py test_t3_rpc_controller.py test_t3_operations.py test_t3_transport.py
+	$(VENV_PYTHON) -m compileall -q t3_controller t3_rpc_controller.py test_t3_rpc_controller.py test_t3_operations.py test_t3_transport.py
 	$(VENV_PYTHON) -m pip check
 	$(MAKE) test
 

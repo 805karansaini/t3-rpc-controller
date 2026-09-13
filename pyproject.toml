@@ -14,3 +14,4 @@ t3ctl = "t3_rpc_controller:main"
 
 [tool.setuptools]
 py-modules = ["t3_rpc_controller"]
+packages = ["t3_controller"]

@@ -3,137 +3,37 @@ import argparse
 import asyncio
 import getpass
 import json
-import os
-import re
 import sys
 import time
-import urllib.error
-import urllib.request
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlencode, urlparse
 
 import websockets
 from websockets.exceptions import WebSocketException
 
+from t3_controller.output import (
+    OUTPUT_SCHEMA_VERSION,
+    emit_json,
+    error_category,
+    redact_sensitive,
+    safe_error_message,
+)
+from t3_controller.state import DEFAULT_HOME, EnvironmentStore, normalize_url
+from t3_controller.transport import (
+    fetch_shell_snapshot,
+    fetch_thread_snapshot,
+    first_shell_snapshot,
+    first_stream_snapshot,
+    http_form,
+    http_json,
+    make_request,
+    rpc_call,
+    websocket_url,
+)
 
-ENV_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
-DEFAULT_HOME = Path(__file__).resolve().parent / ".state"
-SENSITIVE_KEY_RE = re.compile(r"token|ticket|authorization|cookie|credential|secret", re.I)
+
 CODEX_PROVIDER_INSTANCE = "codex"
-OUTPUT_SCHEMA_VERSION = 1
-
-
-class EnvironmentStore:
-    def __init__(self, home: Path = DEFAULT_HOME):
-        self.home = Path(home)
-        self.config_path = self.home / "environments.json"
-        self.token_dir = self.home / "tokens"
-
-    def save(self, name: str, url: str, token: str) -> None:
-        if not ENV_NAME_RE.fullmatch(name):
-            raise ValueError("environment name must match [A-Za-z0-9._-]+")
-        normalized_url = normalize_url(url)
-        self.home.mkdir(parents=True, exist_ok=True)
-        self.token_dir.mkdir(parents=True, exist_ok=True)
-        os.chmod(self.home, 0o700)
-        os.chmod(self.token_dir, 0o700)
-        config = self.load_config()
-        config[name] = {"url": normalized_url}
-        temp_path = self.config_path.with_suffix(".tmp")
-        temp_path.write_text(json.dumps(config, indent=2) + "\n")
-        os.chmod(temp_path, 0o600)
-        temp_path.replace(self.config_path)
-        token_path = self.token_dir / name
-        token_path.write_text(token.strip())
-        os.chmod(token_path, 0o600)
-
-    def load_config(self) -> dict:
-        if not self.config_path.exists():
-            return {}
-        return json.loads(self.config_path.read_text())
-
-    def load(self, name: str) -> tuple[str, str]:
-        if not ENV_NAME_RE.fullmatch(name):
-            raise ValueError("invalid environment name")
-        config = self.load_config()
-        if name not in config:
-            raise KeyError(f"unknown environment: {name}")
-        token_path = self.token_dir / name
-        if not token_path.exists():
-            raise FileNotFoundError(f"missing token for environment: {name}")
-        return config[name]["url"], token_path.read_text().strip()
-
-    def names(self) -> list[str]:
-        return sorted(self.load_config())
-
-    def remove(self, name: str) -> Path:
-        if not ENV_NAME_RE.fullmatch(name):
-            raise ValueError("invalid environment name")
-        config = self.load_config()
-        if name not in config:
-            raise KeyError(f"unknown environment: {name}")
-        removed_root = self.home / "removed"
-        removed_root.mkdir(parents=True, exist_ok=True)
-        os.chmod(removed_root, 0o700)
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        backup = removed_root / f"{name}-{stamp}"
-        backup.mkdir(mode=0o700)
-        metadata_path = backup / "environment.json"
-        metadata_path.write_text(json.dumps({name: {"url": config[name].get("url")}}, indent=2) + "\n")
-        os.chmod(metadata_path, 0o600)
-        token_path = self.token_dir / name
-        if token_path.exists():
-            token_path.replace(backup / "token")
-        del config[name]
-        temp_path = self.config_path.with_suffix(".tmp")
-        temp_path.write_text(json.dumps(config, indent=2) + "\n")
-        os.chmod(temp_path, 0o600)
-        temp_path.replace(self.config_path)
-        return backup
-
-
-def normalize_url(url: str) -> str:
-    value = url.strip()
-    if value.startswith("@url:") or "`" in value:
-        raise ValueError("use a plain URL, for example http://100.65.116.80:3773 (without @url: or backticks)")
-    parsed = urlparse(value)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ValueError("T3 URL must be an http(s) origin")
-    return f"{parsed.scheme}://{parsed.netloc}"
-
-
-def redact_sensitive(value: object) -> object:
-    if isinstance(value, dict):
-        return {
-            key: "[REDACTED]" if SENSITIVE_KEY_RE.search(str(key)) else redact_sensitive(item)
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [redact_sensitive(item) for item in value]
-    if isinstance(value, str):
-        value = re.sub(r"(?i)(bearer\s+)[^\s\"']+", r"\1[REDACTED]", value)
-        return re.sub(r"(?i)([?&]wsTicket=)[^&\s\"']+", r"\1[REDACTED]", value)
-    return value
-
-
-def safe_error_message(error: object) -> str:
-    if isinstance(error, (dict, list)):
-        return json.dumps(redact_sensitive(error), separators=(",", ":"))
-    return str(redact_sensitive(str(error)))
-
-
-def error_category(error: BaseException) -> str:
-    if isinstance(error, (ValueError, KeyError)):
-        return "invalid_request"
-    if isinstance(error, FileNotFoundError):
-        return "configuration"
-    if isinstance(error, (asyncio.TimeoutError, TimeoutError)):
-        return "timeout"
-    if isinstance(error, (OSError, WebSocketException)):
-        return "connection"
-    return "remote"
 
 
 def nonnegative_int(value: str) -> int:
@@ -148,12 +48,6 @@ def positive_int(value: str) -> int:
     if parsed < 1:
         raise argparse.ArgumentTypeError("must be one or greater")
     return parsed
-
-
-def emit_json(value: object, *, indent: int | None = None, flush: bool = False) -> None:
-    if isinstance(value, dict) and "schemaVersion" not in value:
-        value = {"schemaVersion": OUTPUT_SCHEMA_VERSION, **value}
-    print(json.dumps(redact_sensitive(value), indent=indent), flush=flush)
 
 
 def require_codex_provider(instance_id: str) -> None:
@@ -177,16 +71,6 @@ def positive_float(value: str) -> float:
     return parsed
 
 
-def make_request(request_id: str, tag: str, payload: object) -> dict:
-    return {
-        "_tag": "Request",
-        "id": request_id,
-        "tag": tag,
-        "payload": payload,
-        "headers": [],
-    }
-
-
 def project_rows_from_snapshot(snapshot: dict) -> list[dict]:
     rows = [
         {
@@ -202,30 +86,6 @@ def project_rows_from_snapshot(snapshot: dict) -> list[dict]:
         for project in snapshot.get("projects", [])
     ]
     return sorted(rows, key=lambda row: (str(row.get("title", "")).lower(), str(row.get("id", ""))))
-
-
-def first_shell_snapshot(messages: list[dict], request_id: str) -> dict | None:
-    for message in messages:
-        if message.get("_tag") != "Chunk" or message.get("requestId") != request_id:
-            continue
-        for value in message.get("values", []):
-            if isinstance(value, dict) and value.get("kind") == "snapshot":
-                snapshot = value.get("snapshot")
-                if isinstance(snapshot, dict):
-                    return snapshot
-    return None
-
-
-def first_stream_snapshot(messages: list[dict], request_id: str) -> dict | None:
-    for message in messages:
-        if message.get("_tag") != "Chunk" or message.get("requestId") != request_id:
-            continue
-        for value in message.get("values", []):
-            if isinstance(value, dict) and value.get("kind") == "snapshot":
-                snapshot = value.get("snapshot")
-                if isinstance(snapshot, dict):
-                    return snapshot
-    return None
 
 
 def thread_snapshot_summary(snapshot: dict, environment: str) -> dict:
@@ -597,83 +457,6 @@ def merge_environment_projects(projects_by_environment: dict[str, list[dict]]) -
     )
 
 
-def http_json(url: str, token: str | None, method: str = "GET", payload: dict | None = None) -> dict:
-    body = None if payload is None else json.dumps(payload).encode()
-    headers = {}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    if body is not None:
-        headers["Content-Type"] = "application/json"
-    request = urllib.request.Request(url, data=body, method=method, headers=headers)
-    try:
-        with urllib.request.urlopen(request, timeout=15) as response:
-            return json.load(response)
-    except urllib.error.HTTPError as error:
-        parsed = urlparse(url)
-        raise RuntimeError(f"T3 HTTP {error.code} from {parsed.scheme}://{parsed.netloc}{parsed.path}") from error
-
-
-def websocket_url(http_url: str, ticket: str) -> str:
-    parsed = urlparse(http_url)
-    scheme = "wss" if parsed.scheme == "https" else "ws"
-    return f"{scheme}://{parsed.netloc}/ws?wsTicket={ticket}"
-
-
-async def rpc_call(
-    http_url: str,
-    token: str,
-    tag: str,
-    payload: object,
-    timeout: float = 30,
-) -> object:
-    async with asyncio.timeout(timeout):
-        ticket_result = await asyncio.to_thread(
-            http_json,
-            f"{http_url}/api/auth/websocket-ticket",
-            token,
-            "POST",
-        )
-        if not isinstance(ticket_result, dict):
-            raise RuntimeError("T3 returned an invalid WebSocket ticket response")
-        ticket = ticket_result.get("ticket")
-        if not isinstance(ticket, str) or not ticket:
-            raise RuntimeError("T3 did not return a WebSocket ticket")
-
-        request_id = f"t3-controller-{uuid.uuid4()}"
-        async with websockets.connect(
-            websocket_url(http_url, ticket),
-            open_timeout=min(timeout, 15),
-        ) as socket:
-            await socket.send(json.dumps({"_tag": "Ping"}))
-            await socket.send(json.dumps(make_request(request_id, tag, payload)))
-            while True:
-                raw_message = await socket.recv()
-                message = json.loads(raw_message)
-                if not isinstance(message, dict):
-                    raise RuntimeError("T3 returned an invalid RPC message")
-                if message.get("_tag") != "Exit" or message.get("requestId") != request_id:
-                    continue
-                exit_value = message.get("exit", {})
-                if exit_value.get("_tag") == "Success":
-                    return exit_value.get("value")
-                raise RuntimeError(f"T3 RPC {tag} failed: {safe_error_message(exit_value)}")
-
-
-def http_form(url: str, payload: dict[str, str]) -> dict:
-    request = urllib.request.Request(
-        url,
-        data=urlencode(payload).encode(),
-        method="POST",
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=15) as response:
-            return json.load(response)
-    except urllib.error.HTTPError as error:
-        parsed = urlparse(url)
-        raise RuntimeError(f"T3 HTTP {error.code} from {parsed.scheme}://{parsed.netloc}{parsed.path}") from error
-
-
 def oauth_exchange_payload(credential: str) -> dict[str, str]:
     return {
         "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
@@ -714,82 +497,6 @@ def bootstrap_bearer(http_url: str, credential: str) -> str:
         {"credential": credential},
     )
     return bearer_token_from_bootstrap(result)
-
-
-async def fetch_shell_snapshot(http_url: str, token: str) -> dict:
-    async with asyncio.timeout(30):
-        ticket_result = await asyncio.to_thread(
-            http_json,
-            f"{http_url}/api/auth/websocket-ticket",
-            token,
-            "POST",
-        )
-        if not isinstance(ticket_result, dict):
-            raise RuntimeError("T3 returned an invalid WebSocket ticket response")
-        ticket = ticket_result.get("ticket")
-        if not isinstance(ticket, str) or not ticket:
-            raise RuntimeError("T3 did not return a WebSocket ticket")
-
-        request_id = f"hermes-projects-{uuid.uuid4()}"
-        async with websockets.connect(websocket_url(http_url, ticket), open_timeout=15) as socket:
-            await socket.send(json.dumps({"_tag": "Ping"}))
-            await socket.send(json.dumps(make_request(request_id, "orchestration.subscribeShell", {})))
-            while True:
-                raw_message = await socket.recv()
-                message = json.loads(raw_message)
-                if not isinstance(message, dict):
-                    raise RuntimeError("T3 returned an invalid shell message")
-                snapshot = first_shell_snapshot([message], request_id)
-                if snapshot is not None:
-                    return snapshot
-                if message.get("_tag") == "Exit" and message.get("requestId") == request_id:
-                    exit_value = message.get("exit", {})
-                    if exit_value.get("_tag") != "Success":
-                        raise RuntimeError(f"T3 RPC failed: {safe_error_message(exit_value)}")
-                    raise RuntimeError("T3 RPC stream ended before returning a shell snapshot")
-
-
-async def fetch_thread_snapshot(
-    http_url: str,
-    token: str,
-    thread_id: str,
-    turn_limit: int | None = None,
-) -> dict:
-    async with asyncio.timeout(30):
-        ticket_result = await asyncio.to_thread(
-            http_json,
-            f"{http_url}/api/auth/websocket-ticket",
-            token,
-            "POST",
-        )
-        if not isinstance(ticket_result, dict):
-            raise RuntimeError("T3 returned an invalid WebSocket ticket response")
-        ticket = ticket_result.get("ticket")
-        if not isinstance(ticket, str) or not ticket:
-            raise RuntimeError("T3 did not return a WebSocket ticket")
-
-        request_id = f"t3-thread-{uuid.uuid4()}"
-        payload: dict[str, object] = {"threadId": thread_id}
-        if turn_limit is not None:
-            payload["turnLimit"] = turn_limit
-        async with websockets.connect(websocket_url(http_url, ticket), open_timeout=15) as socket:
-            await socket.send(json.dumps({"_tag": "Ping"}))
-            await socket.send(
-                json.dumps(make_request(request_id, "orchestration.subscribeThread", payload))
-            )
-            while True:
-                raw_message = await socket.recv()
-                message = json.loads(raw_message)
-                if not isinstance(message, dict):
-                    raise RuntimeError("T3 returned an invalid thread message")
-                snapshot = first_stream_snapshot([message], request_id)
-                if snapshot is not None:
-                    return snapshot
-                if message.get("_tag") == "Exit" and message.get("requestId") == request_id:
-                    exit_value = message.get("exit", {})
-                    if exit_value.get("_tag") != "Success":
-                        raise RuntimeError(f"T3 RPC failed: {safe_error_message(exit_value)}")
-                    raise RuntimeError("T3 RPC stream ended before returning a thread snapshot")
 
 
 async def follow_thread(

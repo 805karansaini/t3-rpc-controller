@@ -60,7 +60,7 @@ class FakeT3Server:
         ws_port = self.server.sockets[0].getsockname()[1]
         self.ws_url = f"ws://127.0.0.1:{ws_port}"
         self.websocket_patch = patch(
-            "t3_rpc_controller.websocket_url",
+            "t3_controller.transport.websocket_url",
             side_effect=lambda http_url, ticket: f"{self.ws_url}/ws?wsTicket={ticket}",
         )
         self.websocket_patch.start()
