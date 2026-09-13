@@ -38,7 +38,7 @@ Credential values are never recorded here. Local connection state lives under `.
 | Baseline | Complete | `make check`, `make smoke`, and both-machine project query | First commit contains no local state or credentials |
 | Connectivity | In progress | `health`, safe environment output, partial project results | Transport failure tests and credential removal remain |
 | Discovery | Complete | `threads`, `thread show`, `search`, `providers`, and `models` verified live | Safe identity selection is available for write commands |
-| Monitoring | In progress | `thread follow` snapshot, ordered events, bounded wait, resume, and deduplication | Pending-action emphasis will be finished with response commands |
+| Monitoring | Complete | `thread follow` plus `thread pending` | Snapshot, events, timeout, resume, deduplication, and pending requests covered |
 | Task control | In progress | Live create, model change, task dispatch, completion, and reply verified | Stop, approvals, and questions remain |
 | Lifecycle | Not started | | Rename, archive, pin, snooze, delete |
 | Agent hardening | Not started | | Stable output, redaction, fake-server tests |

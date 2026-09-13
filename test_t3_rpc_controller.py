@@ -13,6 +13,7 @@ from t3_rpc_controller import (
     bearer_token_from_oauth,
     build_thread_create_command,
     build_thread_model_command,
+    build_thread_stop_command,
     build_turn_start_command,
     filter_thread_rows,
     first_shell_snapshot,
@@ -30,6 +31,7 @@ from t3_rpc_controller import (
     is_terminal_thread_snapshot,
     thread_snapshot_summary,
     model_selection,
+    pending_requests_from_thread,
     read_prompt,
     list_many_projects,
 )
@@ -336,6 +338,41 @@ class RpcProtocolTests(unittest.TestCase):
             prompt = Path(directory) / "prompt.txt"
             prompt.write_text("Task from file")
             self.assertEqual(read_prompt(None, str(prompt)), "Task from file")
+
+    def test_builds_turn_interrupt_and_session_stop_commands(self):
+        interrupt = build_thread_stop_command("t1", "turn-1", False)
+        self.assertEqual(interrupt["type"], "thread.turn.interrupt")
+        self.assertEqual(interrupt["turnId"], "turn-1")
+        session_stop = build_thread_stop_command("t1", None, True)
+        self.assertEqual(session_stop["type"], "thread.session.stop")
+        self.assertNotIn("turnId", session_stop)
+
+    def test_pending_requests_keep_only_unresolved_items(self):
+        thread = {
+            "activities": [
+                {
+                    "kind": "approval.requested",
+                    "summary": "Run command",
+                    "turnId": "turn-1",
+                    "createdAt": "2026-09-13T10:00:00Z",
+                    "payload": {"requestId": "a1", "requestType": "command_execution"},
+                },
+                {
+                    "kind": "user-input.requested",
+                    "summary": "Choose",
+                    "turnId": "turn-1",
+                    "createdAt": "2026-09-13T10:01:00Z",
+                    "payload": {"requestId": "q1", "questions": [{"id": "q"}]},
+                },
+                {
+                    "kind": "approval.resolved",
+                    "summary": "Approved",
+                    "payload": {"requestId": "a1"},
+                },
+            ]
+        }
+        pending = pending_requests_from_thread(thread)
+        self.assertEqual([item["requestId"] for item in pending], ["q1"])
 
 
 class MultiEnvironmentTests(unittest.IsolatedAsyncioTestCase):

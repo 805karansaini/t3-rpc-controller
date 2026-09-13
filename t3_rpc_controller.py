@@ -233,6 +233,53 @@ def build_thread_model_command(thread_id: str, selection: dict) -> dict:
     }
 
 
+def build_thread_stop_command(thread_id: str, turn_id: str | None, stop_session: bool) -> dict:
+    command = {
+        "type": "thread.session.stop" if stop_session else "thread.turn.interrupt",
+        "commandId": str(uuid.uuid4()),
+        "threadId": thread_id,
+        "createdAt": utc_now(),
+    }
+    if not stop_session and turn_id:
+        command["turnId"] = turn_id
+    return command
+
+
+def pending_requests_from_thread(thread: dict) -> list[dict]:
+    pending: dict[str, dict] = {}
+    for activity in thread.get("activities", []):
+        if not isinstance(activity, dict) or not isinstance(activity.get("payload"), dict):
+            continue
+        payload = activity["payload"]
+        request_id = payload.get("requestId")
+        if not isinstance(request_id, str):
+            continue
+        kind = activity.get("kind")
+        if kind in {"approval.requested", "user-input.requested"}:
+            pending[request_id] = {
+                "requestId": request_id,
+                "kind": kind,
+                "turnId": activity.get("turnId"),
+                "summary": activity.get("summary"),
+                "createdAt": activity.get("createdAt"),
+                "detail": payload.get("detail"),
+                "requestType": payload.get("requestType"),
+                "options": payload.get("options", []),
+                "questions": payload.get("questions", []),
+                "responseMode": payload.get("responseMode"),
+            }
+        elif kind in {"approval.resolved", "user-input.resolved"}:
+            pending.pop(request_id, None)
+        elif kind in {
+            "provider.approval.respond.failed",
+            "provider.user-input.respond.failed",
+        }:
+            detail = str(payload.get("detail", "")).lower()
+            if "stale pending" in detail or "unknown pending" in detail:
+                pending.pop(request_id, None)
+    return sorted(pending.values(), key=lambda item: str(item.get("createdAt", "")))
+
+
 def thread_row(thread: dict, environment: str) -> dict:
     return {
         "environment": environment,
@@ -1009,6 +1056,37 @@ async def set_thread_model_operation(store: EnvironmentStore, args: argparse.Nam
     }
 
 
+async def stop_thread_operation(store: EnvironmentStore, args: argparse.Namespace) -> dict:
+    before = await require_thread_snapshot(store, args.environment, args.thread_id)
+    thread = before["thread"]
+    turn_id = (thread.get("latestTurn") or {}).get("turnId")
+    if not args.session and (thread.get("latestTurn") or {}).get("state") != "running":
+        raise ValueError(f"thread {args.thread_id} has no running turn to interrupt")
+    command = build_thread_stop_command(args.thread_id, turn_id, args.session)
+    receipt = await dispatch_command(store, args.environment, command)
+    if args.session:
+        predicate = lambda current: (current.get("session") or {}).get("status") in {
+            None,
+            "stopped",
+            "error",
+        }
+    else:
+        predicate = lambda current: (current.get("latestTurn") or {}).get("state") != "running"
+    confirmed = await wait_for_shell_thread(
+        store,
+        args.environment,
+        args.thread_id,
+        predicate,
+    )
+    return {
+        "ok": True,
+        "operation": command["type"],
+        "commandId": command["commandId"],
+        "receipt": receipt,
+        "thread": thread_row(confirmed, args.environment),
+    }
+
+
 async def list_many_projects(
     store: EnvironmentStore,
     names: list[str],
@@ -1176,6 +1254,32 @@ def thread_model_command(store: EnvironmentStore, args: argparse.Namespace) -> i
     return 0
 
 
+def thread_pending_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
+    snapshot = asyncio.run(
+        require_thread_snapshot(store, args.environment, args.thread_id, args.turn_limit)
+    )
+    pending = pending_requests_from_thread(snapshot["thread"])
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "environment": args.environment,
+                "threadId": args.thread_id,
+                "count": len(pending),
+                "pending": pending,
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def thread_stop_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
+    result = asyncio.run(stop_thread_operation(store, args))
+    print(json.dumps(result, indent=2))
+    return 0
+
+
 def search_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
     names = store.names() if not args.environment or args.environment == ["all"] else args.environment
     if not names:
@@ -1330,6 +1434,18 @@ def build_parser() -> argparse.ArgumentParser:
     thread_model.add_argument("--provider", required=True)
     thread_model.add_argument("--model", required=True)
     thread_model.set_defaults(handler=thread_model_command)
+
+    thread_pending = thread_commands.add_parser("pending", help="list unresolved approvals and questions")
+    thread_pending.add_argument("environment")
+    thread_pending.add_argument("thread_id")
+    thread_pending.add_argument("--turn-limit", type=int, default=20)
+    thread_pending.set_defaults(handler=thread_pending_command)
+
+    thread_stop = thread_commands.add_parser("stop", help="interrupt a running turn or stop its provider session")
+    thread_stop.add_argument("environment")
+    thread_stop.add_argument("thread_id")
+    thread_stop.add_argument("--session", action="store_true", help="stop the provider session instead of only the active turn")
+    thread_stop.set_defaults(handler=thread_stop_command)
 
     search = subparsers.add_parser("search", help="search user and assistant thread messages")
     search.add_argument("query")

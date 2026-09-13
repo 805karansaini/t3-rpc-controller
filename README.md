@@ -170,6 +170,21 @@ Change the provider and model for an existing thread:
 
 The controller verifies the project, provider, and model before dispatch. It then reads the thread back and only reports success after T3 confirms the new state.
 
+Inspect unresolved approval and user-input requests for one thread:
+
+```bash
+./t3_rpc_controller.py thread pending mac THREAD_ID
+```
+
+Interrupt the active turn, or stop the provider session completely:
+
+```bash
+./t3_rpc_controller.py thread stop mac THREAD_ID
+./t3_rpc_controller.py thread stop mac THREAD_ID --session
+```
+
+The first command requires a running turn and confirms that T3 marked it interrupted. The session form confirms that the provider session reached `stopped` or `error`.
+
 Run tests:
 
 ```bash

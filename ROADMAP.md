@@ -38,7 +38,7 @@ The work is complete when an agent can use documented commands to identify a mac
 - [x] Follow ordered thread events as JSON Lines for another agent to consume.
 - [x] Stop following after a terminal state or caller-supplied timeout.
 - [x] Reconnect safely and avoid emitting duplicate events.
-- [ ] Report pending approvals and user-input requests prominently.
+- [x] Report pending approvals and user-input requests prominently.
 
 ### 4. Create and run work
 
@@ -50,7 +50,7 @@ The work is complete when an agent can use documented commands to identify a mac
 
 ### 5. Control active work
 
-- [ ] Stop or interrupt an active turn and verify it stopped.
+- [x] Stop or interrupt an active turn and verify it stopped.
 - [ ] Answer an approval request and verify T3 accepted the response.
 - [ ] Answer or dismiss a user-input request and verify the pending state cleared.
 - [ ] Make retries safe so an agent cannot accidentally submit the same response twice.
