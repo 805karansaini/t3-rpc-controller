@@ -997,9 +997,12 @@ async def require_thread_snapshot(
     environment: str,
     thread_id: str,
     turn_limit: int = 5,
+    timeout: float = 30,
 ) -> dict:
     url, token = store.load(environment)
-    snapshot = await fetch_thread_snapshot(url, token, thread_id, turn_limit)
+    snapshot = await fetch_thread_snapshot(
+        url, token, thread_id, turn_limit, timeout=timeout
+    )
     thread = snapshot.get("thread")
     if not isinstance(thread, dict) or thread.get("id") != thread_id:
         raise RuntimeError(f"T3 did not return the requested thread {thread_id}")
@@ -1474,9 +1477,44 @@ async def wait_thread_operation(store: EnvironmentStore, args: argparse.Namespac
     target_message_id = validate_uuid(getattr(args, "message_id", None), "--message-id")
     deadline = None if args.timeout == 0 else time.monotonic() + args.timeout
     target_turn_id = None
+    last_thread = None
+
+    def timeout_result() -> dict:
+        result = {
+            "ok": False,
+            "operation": "thread.wait",
+            "reason": "timeout",
+            "environment": args.environment,
+            "threadId": args.thread_id,
+            "messageId": target_message_id,
+            "turnId": target_turn_id,
+        }
+        if last_thread is not None:
+            result["thread"] = thread_row(last_thread, args.environment)
+        return result
+
     while True:
-        snapshot = await require_thread_snapshot(store, args.environment, args.thread_id, 100)
+        remaining = None if deadline is None else deadline - time.monotonic()
+        if remaining is not None and remaining <= 0:
+            return timeout_result()
+        try:
+            if remaining is None:
+                snapshot = await require_thread_snapshot(
+                    store, args.environment, args.thread_id, 100
+                )
+            else:
+                async with asyncio.timeout(remaining):
+                    snapshot = await require_thread_snapshot(
+                        store,
+                        args.environment,
+                        args.thread_id,
+                        100,
+                        timeout=remaining,
+                    )
+        except asyncio.TimeoutError:
+            return timeout_result()
         thread = snapshot["thread"]
+        last_thread = thread
         if target_message_id:
             message = next(
                 (
@@ -1534,7 +1572,12 @@ async def wait_thread_operation(store: EnvironmentStore, args: argparse.Namespac
                 "thread": thread_row(thread, args.environment),
             }
 
-        if target_message_id and target_turn_id and latest_turn_id != target_turn_id:
+        if (
+            target_message_id
+            and target_turn_id
+            and isinstance(latest_turn_id, str)
+            and latest_turn_id != target_turn_id
+        ):
             return {
                 "ok": False,
                 "operation": "thread.wait",
@@ -1548,17 +1591,11 @@ async def wait_thread_operation(store: EnvironmentStore, args: argparse.Namespac
             }
 
         if deadline is not None and time.monotonic() >= deadline:
-            return {
-                "ok": False,
-                "operation": "thread.wait",
-                "reason": "timeout",
-                "environment": args.environment,
-                "threadId": args.thread_id,
-                "messageId": target_message_id,
-                "turnId": target_turn_id,
-                "thread": thread_row(thread, args.environment),
-            }
-        await asyncio.sleep(args.poll_interval)
+            return timeout_result()
+        sleep_for = args.poll_interval
+        if deadline is not None:
+            sleep_for = min(sleep_for, max(0, deadline - time.monotonic()))
+        await asyncio.sleep(sleep_for)
 
 
 async def run_thread_operation(

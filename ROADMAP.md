@@ -86,11 +86,12 @@ The work is complete when an agent can use documented commands to identify a mac
 - [x] Pin the tested dependency and run setup, tests, and smoke checks through the project environment.
 - [x] Separate state, output, and network code from the controller workflow.
 - [x] Preserve retry identifiers across successful dispatches whose confirmation read fails.
-- [x] Recognize an exact completed turn even after a newer turn becomes current.
+- [x] Never mistake an older completed turn for the result of newly submitted work.
 - [x] Keep standalone installation state outside `site-packages`.
 - [x] Make resumed monitoring start with a snapshot and include setup and backoff in its deadline.
 - [x] Preserve changed stream snapshots, stop immediately for resumed terminal state, and bound connection cleanup.
 - [x] Return an explicit unknown result when a newer turn hides an older target's final state.
+- [x] Include snapshot reads in task-wait deadlines and tolerate temporarily missing latest-turn data.
 
 ## Commit rhythm
 

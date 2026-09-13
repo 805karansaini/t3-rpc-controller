@@ -46,8 +46,8 @@ Credential values are never recorded here. This checkout's connection state live
 | Monitoring | Complete | `thread follow` plus `thread pending` | Snapshot, events, timeout, resume, deduplication, and pending requests covered |
 | Task control | Complete | Live create, model change, task dispatch, completion, stop, and approval response verified | User-question response is schema- and unit-verified; the current Codex mode would not emit a live question request |
 | Lifecycle | Complete | Live rename, archive, pin, snooze, settle, history, diff, and guarded deletion verified | Three disposable build-test threads were removed and confirmed absent |
-| Agent hardening | Complete | JSON schema versioning, bounds, all-output redaction, previews, compatibility checks, a 70-test suite, and both-machine read-only smoke | Operation tests cover creation, recoverable send, task-aware wait, model, stop, requests, organization, deletion, and monitor reconnect/resume/deduplication |
-| Reliability follow-up | Complete | `make setup`, `make check`, `make smoke`, `make live-smoke`, resumed live follow, live wait, and live run preview | Version 0.2.2 preserves retry instructions, keeps stream snapshots authoritative, avoids guessing superseded outcomes, bounds WebSocket close time, and keeps standalone state outside installed code |
+| Agent hardening | Complete | JSON schema versioning, bounds, all-output redaction, previews, compatibility checks, a 72-test suite, and both-machine read-only smoke | Operation tests cover creation, recoverable send, task-aware wait, model, stop, requests, organization, deletion, and monitor reconnect/resume/deduplication |
+| Reliability follow-up | Complete | `make setup`, `make check`, `make smoke`, `make live-smoke`, resumed live follow, live wait, and live run preview | Version 0.2.3 preserves retry instructions, keeps stream snapshots authoritative, avoids guessing superseded outcomes, and applies total deadlines to monitoring and waiting |
 
 ## Verified limitations
 

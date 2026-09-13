@@ -219,7 +219,7 @@ Wait until a thread finishes or needs approval or input:
 ./t3_rpc_controller.py thread wait mac THREAD_ID --message-id MESSAGE_UUID --timeout 600
 ```
 
-Use the `messageId` returned by `thread send` when waiting for newly submitted work. This prevents an older completed turn from being mistaken for completion of the new task. A pending approval or question returns immediately with `reason: attention-required`. A completed turn exits successfully; an interrupted, failed, timed-out, or superseded turn exits with status 1. `superseded` means a newer turn replaced the target before the controller observed its final state; T3 no longer exposes enough history to label that older result safely, so the controller reports `turnState: unknown` instead of guessing.
+Use the `messageId` returned by `thread send` when waiting for newly submitted work. This prevents an older completed turn from being mistaken for completion of the new task. The timeout covers both polling delays and the network reads themselves. A pending approval or question returns immediately with `reason: attention-required`. A completed turn exits successfully; an interrupted, failed, timed-out, or superseded turn exits with status 1. `superseded` means a newer turn replaced the target before the controller observed its final state; T3 no longer exposes enough history to label that older result safely, so the controller reports `turnState: unknown` instead of guessing.
 
 Submit and wait in one call when an agent does not need the live event stream:
 

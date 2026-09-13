@@ -444,6 +444,51 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["turnId"], "target-turn")
         self.assertEqual(result["turnState"], "unknown")
 
+    async def test_wait_does_not_call_missing_latest_turn_superseded(self):
+        message_id = "22222222-2222-4222-8222-222222222222"
+        thread = {
+            "id": "t1",
+            "messages": [
+                {"id": message_id, "role": "user", "text": "Work", "turnId": "target-turn"}
+            ],
+            "latestTurn": None,
+            "activities": [],
+        }
+        command_args = args(
+            environment="mac",
+            thread_id="t1",
+            message_id=message_id,
+            timeout=0.01,
+            poll_interval=0.01,
+        )
+        with patch(
+            "t3_rpc_controller.require_thread_snapshot",
+            new=AsyncMock(return_value={"thread": thread}),
+        ):
+            result = await wait_thread_operation(object(), command_args)
+        self.assertEqual(result["reason"], "timeout")
+
+    async def test_wait_timeout_includes_snapshot_read(self):
+        async def delayed_snapshot(*args, **kwargs):
+            await asyncio.sleep(0.2)
+            return {"thread": {"id": "t1", "messages": [], "activities": []}}
+
+        command_args = args(
+            environment="mac",
+            thread_id="t1",
+            message_id=None,
+            timeout=0.05,
+            poll_interval=0.01,
+        )
+        with patch(
+            "t3_rpc_controller.require_thread_snapshot",
+            side_effect=delayed_snapshot,
+        ):
+            started = time.monotonic()
+            result = await wait_thread_operation(object(), command_args)
+        self.assertEqual(result["reason"], "timeout")
+        self.assertLess(time.monotonic() - started, 0.15)
+
     async def test_confirmation_failure_preserves_generated_create_retry_ids(self):
         command_args = args(
             environment="mac",
