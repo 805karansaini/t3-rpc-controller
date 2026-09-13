@@ -30,4 +30,10 @@ smoke:
 	./t3_rpc_controller.py environments
 
 live-smoke:
-	./t3_rpc_controller.py projects
+	./t3_rpc_controller.py health >/dev/null
+	./t3_rpc_controller.py compatibility >/dev/null
+	./t3_rpc_controller.py projects >/dev/null
+	./t3_rpc_controller.py threads --environment mac --limit 1 >/dev/null
+	./t3_rpc_controller.py threads --environment i7 --limit 1 >/dev/null
+	./t3_rpc_controller.py providers >/dev/null
+	@echo "Mac and i7 read-only smoke checks passed"

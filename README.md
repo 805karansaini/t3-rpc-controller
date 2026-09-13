@@ -259,6 +259,19 @@ make check
 
 The suite includes a local fake T3 endpoint. It exercises bearer authentication, WebSocket ticket exchange, the initial ping, Effect RPC headers, streamed snapshots, server failures, malformed messages, timeouts, and secret redaction without contacting the Mac or i7 T3 installations.
 
+Run the complete read-only check against both configured machines:
+
+```bash
+make live-smoke
+```
+
+## Verified scope and limitations
+
+- Live task work uses only the Codex provider. Provider discovery remains generic so an agent can inspect T3 configuration without running other providers.
+- The Mac was used for live creation, task completion, stopping, approval, organization, history, diff, and deletion checks. The i7 passed the full read-only health, compatibility, project, thread, and provider checks.
+- The installed Codex mode did not create a live pending user-question request during verification. `thread answer` and `thread dismiss-input` follow the installed T3 schema and pass automated tests, but could not be exercised against a real pending Codex question.
+- This project intentionally has no graphical interface and starts no local service. Use the existing T3 Code app for visual work.
+
 ## Pair or renew an environment
 
 On the target machine, generate a fresh one-time pairing credential:

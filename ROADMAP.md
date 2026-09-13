@@ -71,8 +71,8 @@ The work is complete when an agent can use documented commands to identify a mac
 - [x] Redact credentials, tickets, pairing values, and sensitive server errors.
 - [x] Add compatibility diagnostics for T3 Nightly protocol changes.
 - [x] Add representative integration tests with a fake T3 server.
-- [ ] Run the full checks and live read-only smoke tests on both machines.
-- [ ] Update the README and handoff record with the final command reference and verified limitations.
+- [x] Run the full checks and live read-only smoke tests on both machines.
+- [x] Update the README and handoff record with the final command reference and verified limitations.
 
 ## Commit rhythm
 

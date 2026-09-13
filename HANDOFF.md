@@ -6,9 +6,9 @@ Build a command-line controller that lets an agent operate T3 Code on the Mac an
 
 ## Current status
 
-- The original controller can pair or configure machines and list projects.
-- The native authenticated connection works against both configured machines.
-- Version control, repeatable checks, and the project plan are in place.
+- The controller now covers environment setup, discovery, task dispatch, monitoring, intervention, lifecycle management, history, and diffs.
+- The native authenticated connection and compatibility checks pass against both configured machines.
+- Version control, repeatable checks, the completed roadmap, and a reviewable decision trail are in place.
 - See `ROADMAP.md` for the ordered checklist and `decisions.tsv` for evidence behind completed checkpoints.
 
 ## Verified environment
@@ -42,12 +42,20 @@ Credential values are never recorded here. Local connection state lives under `.
 | Monitoring | Complete | `thread follow` plus `thread pending` | Snapshot, events, timeout, resume, deduplication, and pending requests covered |
 | Task control | Complete | Live create, model change, task dispatch, completion, stop, and approval response verified | User-question response is schema- and unit-verified; the current Codex mode would not emit a live question request |
 | Lifecycle | Complete | Live rename, archive, pin, snooze, settle, history, diff, and guarded deletion verified | Three disposable build-test threads were removed and confirmed absent |
-| Agent hardening | In progress | JSON envelopes, bounds, redaction, previews, compatibility checks, and a 39-test suite including a fake T3 endpoint | Final both-machine smoke and documentation review remain |
+| Agent hardening | Complete | JSON envelopes, bounds, redaction, previews, compatibility checks, a 39-test suite, and both-machine read-only smoke | Ready for agent use |
+
+## Verified limitations
+
+- Live task execution was verified only with the Codex provider, as requested. Claude and OpenCode are not used for live work.
+- Task creation, completion, stopping, and approval handling were verified live on the Mac. The i7 passed authentication, protocol compatibility, discovery, provider, and thread smoke checks without creating disposable work there.
+- T3's current Codex mode did not emit a live user-question request during verification. Answer and dismiss handling match the installed T3 protocol and pass local tests, but this exact path remains unexercised against a live pending question.
+- There is intentionally no graphical interface or local service; T3 Code remains the graphical interface.
 
 ## Resume instructions
 
 1. Read `ROADMAP.md`, this file, and the last rows of `decisions.tsv`.
 2. Run `git status --short --branch` and `make check`.
-3. Use `./t3_rpc_controller.py environments` without opening credential files.
-4. Use read-only live checks before any mutation.
-5. Update this file when a phase changes state and append a decision-log row for each verified checkpoint.
+3. Run `./t3_rpc_controller.py compatibility` and `make live-smoke` before relying on a newer T3 Nightly build.
+4. Use `./t3_rpc_controller.py environments` without opening credential files.
+5. Use `--dry-run` before consequential mutations and preserve exact identity confirmations for deletion or environment removal.
+6. Update this file and append a decision-log row when future protocol changes alter verified behavior.
