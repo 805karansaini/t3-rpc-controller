@@ -56,16 +56,19 @@ Pairing is version-adaptive:
 ## Requirements
 
 - Python 3.11 or newer
-- `websockets` 15–16
+- `websockets` 16.1.1, installed by the project setup
 - Tailscale connectivity for the i7 endpoint
 - Running T3 desktop/server on each target machine
 
-Install the Python dependency if needed:
+Create the project environment and install the `t3ctl` command:
 
 ```bash
 cd /Users/karansaini/Projects/t3-rpc-controller
-python3 -m pip install -r requirements.txt
+make setup
+.venv/bin/t3ctl --help
 ```
+
+The examples below keep the original `./t3_rpc_controller.py` spelling for convenience. The repeatable installed form is `.venv/bin/t3ctl`.
 
 ## Commands
 
@@ -95,12 +98,14 @@ Check authentication and native RPC access on every configured machine:
 ./t3_rpc_controller.py health --environment mac
 ```
 
-Check that each machine still supports the authenticated shell, archived records, provider discovery, and other protocol surfaces required by this controller:
+Check the authenticated shell, archived records, provider discovery, and one thread snapshot on each machine:
 
 ```bash
 ./t3_rpc_controller.py compatibility
 ./t3_rpc_controller.py compatibility --environment i7
 ```
+
+The result labels each capability as `verified-now`, `supported-not-checked-now`, or not applicable. Read-only compatibility checks do not claim that task dispatch or lifecycle changes were exercised during that run.
 
 Multi-machine reads include successful results and an `errors` object when one target is unavailable. The command exits with status 1 if any requested target failed, while preserving data returned by healthy targets.
 
@@ -321,7 +326,7 @@ If a stored credential expires, run `pair` again with the same environment name;
 
 Removal takes the environment out of active configuration and moves its local metadata and credential into a protected `.state/removed/` backup, so an accidental removal is recoverable on this machine.
 
-All successful commands return JSON. Operational failures also return JSON on standard error with a stable category and exit status 1; invalid command usage returns category `usage` and exit status 2. Server errors, thread history, activities, search results, and live events all pass through the same credential redaction before output.
+All successful commands return JSON with `schemaVersion: 1`. Operational failures use the same schema on standard error with a stable category and exit status 1; invalid command usage returns category `usage` and exit status 2. Server errors, thread history, activities, search results, and live events all pass through the same credential redaction before output.
 
 Every thread-changing command, plus environment removal, accepts `--dry-run`. The controller still validates the named environment, project, thread, provider, model, current state, and confirmation values, but does not dispatch the change. Task text and answer contents are replaced by lengths or question IDs in the preview.
 

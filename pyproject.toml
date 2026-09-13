@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "t3-rpc-controller"
+version = "0.2.0"
+description = "Local agent-facing controller for T3 Code"
+requires-python = ">=3.11"
+dependencies = ["websockets==16.1.1"]
+
+[project.scripts]
+t3ctl = "t3_rpc_controller:main"
+
+[tool.setuptools]
+py-modules = ["t3_rpc_controller"]

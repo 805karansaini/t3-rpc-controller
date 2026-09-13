@@ -24,6 +24,7 @@ from t3_rpc_controller import (
     build_user_input_dismiss_command,
     build_user_input_response_command,
     build_parser,
+    check_compatibility,
     dry_run_result,
     emit_json,
     filter_thread_rows,
@@ -429,6 +430,7 @@ class RpcProtocolTests(unittest.TestCase):
                 }
             )
         rendered = output.getvalue()
+        self.assertEqual(json.loads(rendered)["schemaVersion"], 1)
         self.assertNotIn("private-value", rendered)
         self.assertIn("[REDACTED]", rendered)
 
@@ -543,6 +545,42 @@ class RpcProtocolTests(unittest.TestCase):
 
 
 class MultiEnvironmentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_compatibility_separates_live_checks_from_declared_support(self):
+        store = EnvironmentStore(Path("/unused"))
+        active = {"projects": [], "threads": [{"id": "t1"}]}
+        with (
+            patch.object(store, "load", return_value=("http://fake", "fake-token")),
+            patch(
+                "t3_rpc_controller.asyncio.to_thread",
+                new=AsyncMock(
+                    return_value={
+                        "authenticated": True,
+                        "auth": {"sessionMethods": ["bearer-access-token"]},
+                    }
+                ),
+            ),
+            patch(
+                "t3_rpc_controller.rpc_call",
+                new=AsyncMock(side_effect=[{}, {"providers": []}]),
+            ),
+            patch("t3_rpc_controller.fetch_shell_snapshot", new=AsyncMock(return_value=active)),
+            patch(
+                "t3_rpc_controller.fetch_thread_snapshot",
+                new=AsyncMock(return_value={"thread": {"id": "t1"}}),
+            ),
+            patch(
+                "t3_rpc_controller.fetch_archived_shell_snapshot",
+                new=AsyncMock(return_value={"threads": []}),
+            ),
+        ):
+            result = await check_compatibility(store, "mac")
+        self.assertTrue(result["compatible"])
+        self.assertEqual(result["capabilities"]["threadSnapshot"], "verified-now")
+        self.assertEqual(
+            result["capabilities"]["taskDispatch"],
+            "supported-not-checked-now",
+        )
+
     async def test_project_listing_preserves_successes_when_one_environment_fails(self):
         async def fake_list(_store, name):
             if name == "i7":

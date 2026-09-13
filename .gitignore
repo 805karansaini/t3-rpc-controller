@@ -7,6 +7,7 @@ htmlcov/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+*.egg-info/
 
 # Mandatory local controller state and credentials
 .state/

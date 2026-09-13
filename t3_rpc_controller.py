@@ -22,6 +22,7 @@ ENV_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 DEFAULT_HOME = Path(__file__).resolve().parent / ".state"
 SENSITIVE_KEY_RE = re.compile(r"token|ticket|authorization|cookie|credential|secret", re.I)
 CODEX_PROVIDER_INSTANCE = "codex"
+OUTPUT_SCHEMA_VERSION = 1
 
 
 class EnvironmentStore:
@@ -150,6 +151,8 @@ def positive_int(value: str) -> int:
 
 
 def emit_json(value: object, *, indent: int | None = None, flush: bool = False) -> None:
+    if isinstance(value, dict) and "schemaVersion" not in value:
+        value = {"schemaVersion": OUTPUT_SCHEMA_VERSION, **value}
     print(json.dumps(redact_sensitive(value), indent=indent), flush=flush)
 
 
@@ -1843,6 +1846,15 @@ async def check_compatibility(store: EnvironmentStore, name: str) -> dict:
         if not isinstance(active.get("threads"), list) or not isinstance(active.get("projects"), list):
             raise RuntimeError("T3 active shell snapshot has an incompatible shape")
         row["checks"]["activeShell"] = True
+        active_threads = active.get("threads", [])
+        thread_snapshot_checked = False
+        if active_threads:
+            thread_id = active_threads[0].get("id")
+            if isinstance(thread_id, str) and thread_id:
+                thread_snapshot = await fetch_thread_snapshot(url, token, thread_id, 1)
+                if (thread_snapshot.get("thread") or {}).get("id") != thread_id:
+                    raise RuntimeError("T3 thread snapshot has an incompatible shape")
+                thread_snapshot_checked = True
         archived = await fetch_archived_shell_snapshot(url, token)
         if not isinstance(archived.get("threads"), list):
             raise RuntimeError("T3 archived shell snapshot has an incompatible shape")
@@ -1854,14 +1866,18 @@ async def check_compatibility(store: EnvironmentStore, name: str) -> dict:
         row["authMethods"] = list((session.get("auth") or {}).get("sessionMethods", []))
         row["providerInstances"] = len(config["providers"])
         row["compatible"] = True
-        row["controllerCapabilities"] = [
-            "thread-discovery",
-            "thread-streaming",
-            "task-dispatch",
-            "approvals-and-input",
-            "thread-lifecycle",
-            "history-and-diffs",
-        ]
+        row["capabilities"] = {
+            "projectAndThreadDiscovery": "verified-now",
+            "providerAndModelDiscovery": "verified-now",
+            "threadSnapshot": (
+                "verified-now" if thread_snapshot_checked else "not-applicable-no-active-thread"
+            ),
+            "threadEventStreaming": "supported-not-checked-now",
+            "taskDispatch": "supported-not-checked-now",
+            "approvalsAndInput": "supported-not-checked-now",
+            "threadLifecycle": "supported-not-checked-now",
+            "historyAndDiffs": "supported-not-checked-now",
+        }
     except Exception as error:
         row["error"] = safe_error_message(error)
     return row
@@ -1879,7 +1895,7 @@ def configure_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
     if not token:
         raise ValueError("bearer token cannot be empty")
     store.save(args.name, args.url, token)
-    emit_json({"configured": args.name, "url": normalize_url(args.url)})
+    emit_json({"ok": True, "configured": args.name, "url": normalize_url(args.url)})
     return 0
 
 
@@ -1897,7 +1913,7 @@ def pair_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
     if session.get("authenticated") is not True:
         raise RuntimeError("issued T3 bearer session failed verification")
     store.save(args.name, url, token)
-    emit_json({"paired": args.name, "url": url, "authenticated": True})
+    emit_json({"ok": True, "paired": args.name, "url": url, "authenticated": True})
     return 0
 
 
@@ -2193,6 +2209,7 @@ class JsonArgumentParser(argparse.ArgumentParser):
         print(
             json.dumps(
                 {
+                    "schemaVersion": OUTPUT_SCHEMA_VERSION,
                     "ok": False,
                     "error": {"category": "usage", "message": safe_error_message(message)},
                 }
@@ -2229,7 +2246,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     environments = subparsers.add_parser("environments", help="list configured environments")
     environments.set_defaults(
-        handler=lambda store, args: emit_json(safe_environment_config(store), indent=2) or 0
+        handler=lambda store, args: emit_json(
+            {
+                "ok": True,
+                "count": len(store.names()),
+                "environments": safe_environment_config(store),
+            },
+            indent=2,
+        )
+        or 0
     )
 
     health = subparsers.add_parser("health", help="check authentication and RPC access")
@@ -2461,6 +2486,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             json.dumps(
                 {
+                    "schemaVersion": OUTPUT_SCHEMA_VERSION,
                     "ok": False,
                     "error": {
                         "category": error_category(error),
