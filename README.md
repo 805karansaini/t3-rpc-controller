@@ -272,6 +272,16 @@ To import an already-issued bearer from a protected file:
 ./t3_rpc_controller.py configure NAME --url http://HOST:PORT --token-file /protected/token/file
 ```
 
+If a stored credential expires, run `pair` again with the same environment name; the new verified credential replaces the old one without being printed. To remove an environment, repeat its exact name:
+
+```bash
+./t3_rpc_controller.py remove-environment NAME --confirm-name NAME
+```
+
+Removal takes the environment out of active configuration and moves its local metadata and credential into a protected `.state/removed/` backup, so an accidental removal is recoverable on this machine.
+
+All successful commands return JSON. Operational failures also return JSON on standard error with a stable category and exit status 1; invalid command usage returns category `usage` and exit status 2. Server error bodies, bearer values, WebSocket tickets, pairing values, and other credential-like fields are not included in errors.
+
 ## Guidance for another agent
 
 1. Work from `/Users/karansaini/Projects/t3-rpc-controller`.

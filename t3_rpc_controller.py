@@ -19,6 +19,7 @@ import websockets
 
 ENV_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 DEFAULT_HOME = Path(__file__).resolve().parent / ".state"
+SENSITIVE_KEY_RE = re.compile(r"token|ticket|authorization|cookie|credential|secret", re.I)
 
 
 class EnvironmentStore:
@@ -64,6 +65,31 @@ class EnvironmentStore:
     def names(self) -> list[str]:
         return sorted(self.load_config())
 
+    def remove(self, name: str) -> Path:
+        if not ENV_NAME_RE.fullmatch(name):
+            raise ValueError("invalid environment name")
+        config = self.load_config()
+        if name not in config:
+            raise KeyError(f"unknown environment: {name}")
+        removed_root = self.home / "removed"
+        removed_root.mkdir(parents=True, exist_ok=True)
+        os.chmod(removed_root, 0o700)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        backup = removed_root / f"{name}-{stamp}"
+        backup.mkdir(mode=0o700)
+        metadata_path = backup / "environment.json"
+        metadata_path.write_text(json.dumps({name: {"url": config[name].get("url")}}, indent=2) + "\n")
+        os.chmod(metadata_path, 0o600)
+        token_path = self.token_dir / name
+        if token_path.exists():
+            token_path.replace(backup / "token")
+        del config[name]
+        temp_path = self.config_path.with_suffix(".tmp")
+        temp_path.write_text(json.dumps(config, indent=2) + "\n")
+        os.chmod(temp_path, 0o600)
+        temp_path.replace(self.config_path)
+        return backup
+
 
 def normalize_url(url: str) -> str:
     value = url.strip()
@@ -73,6 +99,57 @@ def normalize_url(url: str) -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("T3 URL must be an http(s) origin")
     return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def redact_sensitive(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            key: "[REDACTED]" if SENSITIVE_KEY_RE.search(str(key)) else redact_sensitive(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_sensitive(item) for item in value]
+    if isinstance(value, str):
+        value = re.sub(r"(?i)(bearer\s+)[^\s\"']+", r"\1[REDACTED]", value)
+        return re.sub(r"(?i)([?&]wsTicket=)[^&\s\"']+", r"\1[REDACTED]", value)
+    return value
+
+
+def safe_error_message(error: object) -> str:
+    return str(redact_sensitive(str(error)))
+
+
+def error_category(error: BaseException) -> str:
+    if isinstance(error, (ValueError, KeyError)):
+        return "invalid_request"
+    if isinstance(error, FileNotFoundError):
+        return "configuration"
+    if isinstance(error, (asyncio.TimeoutError, TimeoutError)):
+        return "timeout"
+    if isinstance(error, OSError):
+        return "connection"
+    return "remote"
+
+
+def nonnegative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be zero or greater")
+    return parsed
+
+
+def positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be one or greater")
+    return parsed
+
+
+def nonnegative_float(value: str) -> float:
+    parsed = float(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be zero or greater")
+    return parsed
 
 
 def make_request(request_id: str, tag: str, payload: object) -> dict:
@@ -437,8 +514,8 @@ def http_json(url: str, token: str | None, method: str = "GET", payload: dict | 
         with urllib.request.urlopen(request, timeout=15) as response:
             return json.load(response)
     except urllib.error.HTTPError as error:
-        detail = error.read().decode(errors="replace")
-        raise RuntimeError(f"T3 HTTP {error.code} from {url}: {detail}") from error
+        parsed = urlparse(url)
+        raise RuntimeError(f"T3 HTTP {error.code} from {parsed.scheme}://{parsed.netloc}{parsed.path}") from error
 
 
 def websocket_url(http_url: str, ticket: str) -> str:
@@ -479,7 +556,7 @@ async def rpc_call(
             exit_value = message.get("exit", {})
             if exit_value.get("_tag") == "Success":
                 return exit_value.get("value")
-            raise RuntimeError(f"T3 RPC {tag} failed: {json.dumps(exit_value)}")
+            raise RuntimeError(f"T3 RPC {tag} failed: {safe_error_message(exit_value)}")
 
 
 def http_form(url: str, payload: dict[str, str]) -> dict:
@@ -493,8 +570,8 @@ def http_form(url: str, payload: dict[str, str]) -> dict:
         with urllib.request.urlopen(request, timeout=15) as response:
             return json.load(response)
     except urllib.error.HTTPError as error:
-        detail = error.read().decode(errors="replace")
-        raise RuntimeError(f"T3 HTTP {error.code} from {url}: {detail}") from error
+        parsed = urlparse(url)
+        raise RuntimeError(f"T3 HTTP {error.code} from {parsed.scheme}://{parsed.netloc}{parsed.path}") from error
 
 
 def oauth_exchange_payload(credential: str) -> dict[str, str]:
@@ -565,7 +642,7 @@ async def fetch_shell_snapshot(http_url: str, token: str) -> dict:
             if message.get("_tag") == "Exit" and message.get("requestId") == request_id:
                 exit_value = message.get("exit", {})
                 if exit_value.get("_tag") != "Success":
-                    raise RuntimeError(f"T3 RPC failed: {json.dumps(exit_value)}")
+                    raise RuntimeError(f"T3 RPC failed: {safe_error_message(exit_value)}")
                 raise RuntimeError("T3 RPC stream ended before returning a shell snapshot")
 
 
@@ -603,7 +680,7 @@ async def fetch_thread_snapshot(
             if message.get("_tag") == "Exit" and message.get("requestId") == request_id:
                 exit_value = message.get("exit", {})
                 if exit_value.get("_tag") != "Success":
-                    raise RuntimeError(f"T3 RPC failed: {json.dumps(exit_value)}")
+                    raise RuntimeError(f"T3 RPC failed: {safe_error_message(exit_value)}")
                 raise RuntimeError("T3 RPC stream ended before returning a thread snapshot")
 
 
@@ -678,7 +755,7 @@ async def follow_thread(
                                 "reconnects": reconnects,
                             }
                         raise RuntimeError(
-                            f"T3 thread subscription failed: {json.dumps(exit_value)}"
+                            f"T3 thread subscription failed: {safe_error_message(exit_value)}"
                         )
                     if message.get("_tag") != "Chunk" or message.get("requestId") != request_id:
                         continue
@@ -813,7 +890,7 @@ async def list_many_threads(
     errors: dict[str, str] = {}
     for name, result in zip(names, results, strict=True):
         if isinstance(result, BaseException):
-            errors[name] = str(result)
+            errors[name] = safe_error_message(result)
         else:
             output[name] = result
     return output, errors
@@ -846,7 +923,7 @@ async def search_many_environments(
     errors: dict[str, str] = {}
     for name, result in zip(names, results, strict=True):
         if isinstance(result, BaseException):
-            errors[name] = str(result)
+            errors[name] = safe_error_message(result)
         else:
             matches.extend(result)
     return matches, errors
@@ -909,7 +986,7 @@ async def fetch_many_providers(
     errors: dict[str, str] = {}
     for name, result in zip(names, results, strict=True):
         if isinstance(result, BaseException):
-            errors[name] = str(result)
+            errors[name] = safe_error_message(result)
         else:
             output[name] = result
     return output, errors
@@ -1449,7 +1526,7 @@ async def list_many_projects(
     errors: dict[str, str] = {}
     for name, result in zip(names, results, strict=True):
         if isinstance(result, BaseException):
-            errors[name] = str(result)
+            errors[name] = safe_error_message(result)
         else:
             output[name] = result
     return output, errors
@@ -1480,7 +1557,7 @@ async def check_environment(store: EnvironmentStore, name: str) -> dict:
         await rpc_call(url, token, "server.probe", {})
         row["rpc"] = True
     except Exception as error:
-        row["error"] = str(error)
+        row["error"] = safe_error_message(error)
     return row
 
 
@@ -1515,6 +1592,23 @@ def pair_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
         raise RuntimeError("issued T3 bearer session failed verification")
     store.save(args.name, url, token)
     print(json.dumps({"paired": args.name, "url": url, "authenticated": True}))
+    return 0
+
+
+def remove_environment_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
+    if args.confirm_name != args.name:
+        raise ValueError("--confirm-name must exactly match the environment name")
+    backup = store.remove(args.name)
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "removed": args.name,
+                "recoverableBackup": str(backup),
+            },
+            indent=2,
+        )
+    )
     return 0
 
 
@@ -1771,8 +1865,22 @@ def models_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
     return 0 if not errors else 1
 
 
+class JsonArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": {"category": "usage", "message": safe_error_message(message)},
+                }
+            ),
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Native T3 HTTP/WebSocket RPC controller")
+    parser = JsonArgumentParser(description="Native T3 HTTP/WebSocket RPC controller")
     parser.add_argument("--home", type=Path, default=DEFAULT_HOME, help="controller state directory")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -1786,6 +1894,11 @@ def build_parser() -> argparse.ArgumentParser:
     pair.add_argument("name")
     pair.add_argument("--url", required=True)
     pair.set_defaults(handler=pair_command)
+
+    remove_environment = subparsers.add_parser("remove-environment", help="remove and locally back up one environment")
+    remove_environment.add_argument("name")
+    remove_environment.add_argument("--confirm-name", required=True, help="must exactly repeat NAME")
+    remove_environment.set_defaults(handler=remove_environment_command)
 
     environments = subparsers.add_parser("environments", help="list configured environments")
     environments.set_defaults(
@@ -1806,7 +1919,7 @@ def build_parser() -> argparse.ArgumentParser:
     threads.add_argument("--scope", choices=["active", "archived", "all"], default="active")
     threads.add_argument("--turn-state", choices=["running", "completed", "interrupted", "error"])
     threads.add_argument("--pending", choices=["approvals", "input", "any"])
-    threads.add_argument("--limit", type=int)
+    threads.add_argument("--limit", type=positive_int)
     threads.set_defaults(handler=threads_command)
 
     thread = subparsers.add_parser("thread", help="inspect or control one exact T3 thread")
@@ -1814,18 +1927,18 @@ def build_parser() -> argparse.ArgumentParser:
     thread_show = thread_commands.add_parser("show", help="show detailed thread state and history")
     thread_show.add_argument("environment")
     thread_show.add_argument("thread_id")
-    thread_show.add_argument("--turn-limit", type=int, default=20)
+    thread_show.add_argument("--turn-limit", type=positive_int, default=20)
     thread_show.set_defaults(handler=thread_show_command)
 
     thread_follow = thread_commands.add_parser("follow", help="stream ordered thread updates as JSON Lines")
     thread_follow.add_argument("environment")
     thread_follow.add_argument("thread_id")
-    thread_follow.add_argument("--after-sequence", type=int)
-    thread_follow.add_argument("--timeout", type=float, default=60)
-    thread_follow.add_argument("--max-events", type=int)
-    thread_follow.add_argument("--retries", type=int, default=3)
+    thread_follow.add_argument("--after-sequence", type=nonnegative_int)
+    thread_follow.add_argument("--timeout", type=nonnegative_float, default=60)
+    thread_follow.add_argument("--max-events", type=positive_int)
+    thread_follow.add_argument("--retries", type=nonnegative_int, default=3)
     thread_follow.add_argument("--until-terminal", action="store_true")
-    thread_follow.add_argument("--turn-limit", type=int, default=20)
+    thread_follow.add_argument("--turn-limit", type=positive_int, default=20)
     thread_follow.set_defaults(handler=thread_follow_command)
 
     thread_create = thread_commands.add_parser("create", help="create a thread with an explicit provider and model")
@@ -1912,21 +2025,21 @@ def build_parser() -> argparse.ArgumentParser:
     thread_history = thread_commands.add_parser("history", help="read messages, activities, checkpoints, and plans")
     thread_history.add_argument("environment")
     thread_history.add_argument("thread_id")
-    thread_history.add_argument("--turn-limit", type=int, default=100)
+    thread_history.add_argument("--turn-limit", type=positive_int, default=100)
     thread_history.set_defaults(handler=thread_history_command)
 
     thread_diff = thread_commands.add_parser("diff", help="read the filesystem diff through a turn count")
     thread_diff.add_argument("environment")
     thread_diff.add_argument("thread_id")
-    thread_diff.add_argument("--to-turn-count", type=int, required=True)
-    thread_diff.add_argument("--from-turn-count", type=int)
+    thread_diff.add_argument("--to-turn-count", type=nonnegative_int, required=True)
+    thread_diff.add_argument("--from-turn-count", type=nonnegative_int)
     thread_diff.add_argument("--ignore-whitespace", action="store_true")
     thread_diff.set_defaults(handler=thread_diff_command)
 
     thread_pending = thread_commands.add_parser("pending", help="list unresolved approvals and questions")
     thread_pending.add_argument("environment")
     thread_pending.add_argument("thread_id")
-    thread_pending.add_argument("--turn-limit", type=int, default=20)
+    thread_pending.add_argument("--turn-limit", type=positive_int, default=20)
     thread_pending.set_defaults(handler=thread_pending_command)
 
     thread_stop = thread_commands.add_parser("stop", help="interrupt a running turn or stop its provider session")
@@ -1985,7 +2098,18 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.handler(store, args)
     except (OSError, ValueError, KeyError, RuntimeError, asyncio.TimeoutError) as error:
-        print(f"error: {error}", file=sys.stderr)
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": {
+                        "category": error_category(error),
+                        "message": safe_error_message(error),
+                    },
+                }
+            ),
+            file=sys.stderr,
+        )
         return 1
 
 

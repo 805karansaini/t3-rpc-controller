@@ -20,6 +20,7 @@ from t3_rpc_controller import (
     build_approval_response_command,
     build_user_input_dismiss_command,
     build_user_input_response_command,
+    build_parser,
     filter_thread_rows,
     first_shell_snapshot,
     first_stream_snapshot,
@@ -40,6 +41,7 @@ from t3_rpc_controller import (
     pending_requests_from_thread,
     read_prompt,
     read_json_object,
+    redact_sensitive,
     require_pending_request,
     list_many_projects,
 )
@@ -70,6 +72,16 @@ class EnvironmentStoreTests(unittest.TestCase):
             token_path = Path(directory) / "tokens" / "i7"
             self.assertEqual(token_path.read_text(), "secret-token")
             self.assertEqual(stat.S_IMODE(token_path.stat().st_mode), 0o600)
+
+    def test_environment_removal_is_recoverable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = EnvironmentStore(Path(directory) / "state")
+            store.save("test", "http://127.0.0.1:3773", "private-token")
+            backup = store.remove("test")
+            self.assertNotIn("test", store.names())
+            self.assertFalse((store.token_dir / "test").exists())
+            self.assertEqual((backup / "token").read_text(), "private-token")
+            self.assertEqual(stat.S_IMODE(backup.stat().st_mode), 0o700)
 
     def test_rejects_unsafe_environment_names(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -364,6 +376,25 @@ class RpcProtocolTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "timezone"):
             normalize_future_datetime("2099-01-01T00:00:00")
+
+    def test_redacts_sensitive_keys_and_transport_values(self):
+        redacted = redact_sensitive(
+            {
+                "accessToken": "private",
+                "message": "Bearer abc123 at ws://host/ws?wsTicket=ticket123",
+            }
+        )
+        self.assertEqual(redacted["accessToken"], "[REDACTED]")
+        self.assertNotIn("abc123", redacted["message"])
+        self.assertNotIn("ticket123", redacted["message"])
+
+    def test_argument_errors_are_json_and_reject_negative_limits(self):
+        parser = build_parser()
+        with patch("sys.stderr") as stderr, self.assertRaises(SystemExit) as raised:
+            parser.parse_args(["threads", "--limit", "-1"])
+        self.assertEqual(raised.exception.code, 2)
+        output = "".join(call.args[0] for call in stderr.write.call_args_list)
+        self.assertEqual(json.loads(output)["error"]["category"], "usage")
 
     def test_builds_turn_interrupt_and_session_stop_commands(self):
         interrupt = build_thread_stop_command("t1", "turn-1", False)
