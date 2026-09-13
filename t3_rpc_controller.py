@@ -280,6 +280,46 @@ def pending_requests_from_thread(thread: dict) -> list[dict]:
     return sorted(pending.values(), key=lambda item: str(item.get("createdAt", "")))
 
 
+def build_approval_response_command(
+    thread_id: str,
+    request_id: str,
+    decision: str,
+) -> dict:
+    return {
+        "type": "thread.approval.respond",
+        "commandId": str(uuid.uuid4()),
+        "threadId": thread_id,
+        "requestId": request_id,
+        "decision": decision,
+        "createdAt": utc_now(),
+    }
+
+
+def build_user_input_response_command(
+    thread_id: str,
+    request_id: str,
+    answers: dict,
+) -> dict:
+    return {
+        "type": "thread.user-input.respond",
+        "commandId": str(uuid.uuid4()),
+        "threadId": thread_id,
+        "requestId": request_id,
+        "answers": answers,
+        "createdAt": utc_now(),
+    }
+
+
+def build_user_input_dismiss_command(thread_id: str, request_id: str) -> dict:
+    return {
+        "type": "thread.user-input.dismiss",
+        "commandId": str(uuid.uuid4()),
+        "threadId": thread_id,
+        "requestId": request_id,
+        "createdAt": utc_now(),
+    }
+
+
 def thread_row(thread: dict, environment: str) -> dict:
     return {
         "environment": environment,
@@ -1087,6 +1127,112 @@ async def stop_thread_operation(store: EnvironmentStore, args: argparse.Namespac
     }
 
 
+def require_pending_request(thread: dict, request_id: str, kind: str) -> dict:
+    request = next(
+        (item for item in pending_requests_from_thread(thread) if item.get("requestId") == request_id),
+        None,
+    )
+    if request is None:
+        raise ValueError(f"request {request_id} is not pending on thread {thread.get('id')}")
+    if request.get("kind") != kind:
+        raise ValueError(f"request {request_id} is {request.get('kind')}, not {kind}")
+    return request
+
+
+async def wait_for_request_cleared(
+    store: EnvironmentStore,
+    environment: str,
+    thread_id: str,
+    request_id: str,
+    timeout: float = 10,
+) -> dict:
+    deadline = time.monotonic() + timeout
+    while True:
+        snapshot = await require_thread_snapshot(store, environment, thread_id, 20)
+        if not any(
+            item.get("requestId") == request_id
+            for item in pending_requests_from_thread(snapshot["thread"])
+        ):
+            return snapshot
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"T3 did not confirm resolution of request {request_id}")
+        await asyncio.sleep(0.2)
+
+
+async def approval_response_operation(store: EnvironmentStore, args: argparse.Namespace) -> dict:
+    before = await require_thread_snapshot(store, args.environment, args.thread_id, 20)
+    require_pending_request(before["thread"], args.request_id, "approval.requested")
+    command = build_approval_response_command(args.thread_id, args.request_id, args.decision)
+    receipt = await dispatch_command(store, args.environment, command)
+    confirmed = await wait_for_request_cleared(
+        store,
+        args.environment,
+        args.thread_id,
+        args.request_id,
+    )
+    return {
+        "ok": True,
+        "operation": command["type"],
+        "commandId": command["commandId"],
+        "requestId": args.request_id,
+        "decision": args.decision,
+        "receipt": receipt,
+        "thread": thread_row(confirmed["thread"], args.environment),
+    }
+
+
+def read_json_object(value: str | None, file_path: str | None) -> dict:
+    if value is not None and file_path is not None:
+        raise ValueError("provide either --answers-json or --answers-file, not both")
+    if file_path:
+        raw = sys.stdin.read() if file_path == "-" else Path(file_path).expanduser().read_text()
+    elif value is not None:
+        raw = value
+    else:
+        raise ValueError("provide --answers-json or --answers-file")
+    try:
+        decoded = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise ValueError(f"answers must be valid JSON: {error.msg}") from error
+    if not isinstance(decoded, dict):
+        raise ValueError("answers must be a JSON object keyed by question ID")
+    return decoded
+
+
+async def user_input_response_operation(
+    store: EnvironmentStore,
+    args: argparse.Namespace,
+    answers: dict | None,
+    dismiss: bool,
+) -> dict:
+    before = await require_thread_snapshot(store, args.environment, args.thread_id, 20)
+    request = require_pending_request(before["thread"], args.request_id, "user-input.requested")
+    if dismiss:
+        if request.get("responseMode") != "message":
+            raise ValueError("only asynchronous message-mode questions can be dismissed")
+        command = build_user_input_dismiss_command(args.thread_id, args.request_id)
+    else:
+        command = build_user_input_response_command(args.thread_id, args.request_id, answers or {})
+    receipt = await dispatch_command(store, args.environment, command)
+    confirmed = await wait_for_request_cleared(
+        store,
+        args.environment,
+        args.thread_id,
+        args.request_id,
+    )
+    result = {
+        "ok": True,
+        "operation": command["type"],
+        "commandId": command["commandId"],
+        "requestId": args.request_id,
+        "receipt": receipt,
+        "thread": thread_row(confirmed["thread"], args.environment),
+    }
+    if not dismiss:
+        result["answeredQuestionIds"] = sorted((answers or {}).keys())
+    return result
+
+
 async def list_many_projects(
     store: EnvironmentStore,
     names: list[str],
@@ -1280,6 +1426,25 @@ def thread_stop_command(store: EnvironmentStore, args: argparse.Namespace) -> in
     return 0
 
 
+def thread_approve_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
+    result = asyncio.run(approval_response_operation(store, args))
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def thread_answer_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
+    answers = read_json_object(args.answers_json, args.answers_file)
+    result = asyncio.run(user_input_response_operation(store, args, answers, False))
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def thread_dismiss_input_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
+    result = asyncio.run(user_input_response_operation(store, args, None, True))
+    print(json.dumps(result, indent=2))
+    return 0
+
+
 def search_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
     names = store.names() if not args.environment or args.environment == ["all"] else args.environment
     if not names:
@@ -1446,6 +1611,30 @@ def build_parser() -> argparse.ArgumentParser:
     thread_stop.add_argument("thread_id")
     thread_stop.add_argument("--session", action="store_true", help="stop the provider session instead of only the active turn")
     thread_stop.set_defaults(handler=thread_stop_command)
+
+    thread_approve = thread_commands.add_parser("approve", help="answer one exact pending approval")
+    thread_approve.add_argument("environment")
+    thread_approve.add_argument("thread_id")
+    thread_approve.add_argument("request_id")
+    thread_approve.add_argument(
+        "decision",
+        choices=["accept", "acceptForSession", "acceptAlways", "decline", "cancel"],
+    )
+    thread_approve.set_defaults(handler=thread_approve_command)
+
+    thread_answer = thread_commands.add_parser("answer", help="answer one exact pending user-input request")
+    thread_answer.add_argument("environment")
+    thread_answer.add_argument("thread_id")
+    thread_answer.add_argument("request_id")
+    thread_answer.add_argument("--answers-json")
+    thread_answer.add_argument("--answers-file", help="read a JSON object from a file, or use - for standard input")
+    thread_answer.set_defaults(handler=thread_answer_command)
+
+    thread_dismiss = thread_commands.add_parser("dismiss-input", help="dismiss an asynchronous message-mode question")
+    thread_dismiss.add_argument("environment")
+    thread_dismiss.add_argument("thread_id")
+    thread_dismiss.add_argument("request_id")
+    thread_dismiss.set_defaults(handler=thread_dismiss_input_command)
 
     search = subparsers.add_parser("search", help="search user and assistant thread messages")
     search.add_argument("query")

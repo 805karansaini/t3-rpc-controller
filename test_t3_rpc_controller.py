@@ -15,6 +15,9 @@ from t3_rpc_controller import (
     build_thread_model_command,
     build_thread_stop_command,
     build_turn_start_command,
+    build_approval_response_command,
+    build_user_input_dismiss_command,
+    build_user_input_response_command,
     filter_thread_rows,
     first_shell_snapshot,
     first_stream_snapshot,
@@ -33,6 +36,8 @@ from t3_rpc_controller import (
     model_selection,
     pending_requests_from_thread,
     read_prompt,
+    read_json_object,
+    require_pending_request,
     list_many_projects,
 )
 
@@ -373,6 +378,35 @@ class RpcProtocolTests(unittest.TestCase):
         }
         pending = pending_requests_from_thread(thread)
         self.assertEqual([item["requestId"] for item in pending], ["q1"])
+
+    def test_builds_approval_and_user_input_responses(self):
+        approval = build_approval_response_command("t1", "a1", "accept")
+        self.assertEqual(approval["type"], "thread.approval.respond")
+        self.assertEqual(approval["decision"], "accept")
+        answer = build_user_input_response_command("t1", "q1", {"question": "Blue"})
+        self.assertEqual(answer["answers"], {"question": "Blue"})
+        dismiss = build_user_input_dismiss_command("t1", "q1")
+        self.assertEqual(dismiss["type"], "thread.user-input.dismiss")
+
+    def test_reads_json_answers_and_rejects_non_objects(self):
+        self.assertEqual(read_json_object('{"q1":"Blue"}', None), {"q1": "Blue"})
+        with self.assertRaisesRegex(ValueError, "JSON object"):
+            read_json_object('["Blue"]', None)
+
+    def test_requires_exact_pending_request_kind(self):
+        thread = {
+            "id": "t1",
+            "activities": [
+                {
+                    "kind": "approval.requested",
+                    "summary": "Run",
+                    "payload": {"requestId": "a1"},
+                }
+            ],
+        }
+        self.assertEqual(require_pending_request(thread, "a1", "approval.requested")["requestId"], "a1")
+        with self.assertRaisesRegex(ValueError, "not user-input.requested"):
+            require_pending_request(thread, "a1", "user-input.requested")
 
 
 class MultiEnvironmentTests(unittest.IsolatedAsyncioTestCase):

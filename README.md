@@ -185,6 +185,26 @@ Interrupt the active turn, or stop the provider session completely:
 
 The first command requires a running turn and confirms that T3 marked it interrupted. The session form confirms that the provider session reached `stopped` or `error`.
 
+Answer one exact pending approval request:
+
+```bash
+./t3_rpc_controller.py thread approve mac THREAD_ID REQUEST_ID accept
+```
+
+Supported decisions are `accept`, `acceptForSession`, `acceptAlways`, `decline`, and `cancel`. The controller first confirms that the request is still pending on that thread, then confirms that T3 cleared it. This pre-check prevents an agent from accidentally answering an old request twice.
+
+Answer a pending question with a JSON object keyed by T3's question IDs, or dismiss an asynchronous message-mode question:
+
+```bash
+./t3_rpc_controller.py thread answer mac THREAD_ID REQUEST_ID \
+  --answers-json '{"QUESTION_ID":"Answer"}'
+./t3_rpc_controller.py thread answer mac THREAD_ID REQUEST_ID \
+  --answers-file /path/to/answers.json
+./t3_rpc_controller.py thread dismiss-input mac THREAD_ID REQUEST_ID
+```
+
+Live task execution is intentionally limited to the `codex` provider. The controller can still discover other configured providers, but its live task examples and verification use only Codex on the Mac and i7 environments.
+
 Run tests:
 
 ```bash
@@ -228,4 +248,4 @@ To import an already-issued bearer from a protected file:
 
 ## Current scope
 
-The executable currently provides environment registration/pairing and project enumeration. The underlying authenticated RPC transport is ready to be extended for thread listing, thread subscription, model/provider selection, command dispatch, and monitoring. Add those operations with tests and read-before-write safeguards.
+The executable provides environment setup, project/thread/provider/model discovery, task creation and dispatch, live monitoring, stopping, approvals, and user-input handling. Thread organization and deletion commands are the next build phase; see `ROADMAP.md` for the authoritative checklist.

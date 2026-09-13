@@ -30,6 +30,7 @@ Credential values are never recorded here. Local connection state lives under `.
 - Read the target before a state change and read it again afterward before reporting success.
 - Keep machine-readable output stable so another agent can call the controller without scraping prose.
 - Commit after every two or three related capabilities, after tests pass.
+- Run live tasks only through the Codex provider on the Mac and i7 environments. Other providers may be listed for discovery but are outside live verification.
 
 ## Progress log
 
@@ -39,7 +40,7 @@ Credential values are never recorded here. Local connection state lives under `.
 | Connectivity | In progress | `health`, safe environment output, partial project results | Transport failure tests and credential removal remain |
 | Discovery | Complete | `threads`, `thread show`, `search`, `providers`, and `models` verified live | Safe identity selection is available for write commands |
 | Monitoring | Complete | `thread follow` plus `thread pending` | Snapshot, events, timeout, resume, deduplication, and pending requests covered |
-| Task control | In progress | Live create, model change, task dispatch, completion, and reply verified | Stop, approvals, and questions remain |
+| Task control | Complete | Live create, model change, task dispatch, completion, stop, and approval response verified | User-question response is schema- and unit-verified; the current Codex mode would not emit a live question request |
 | Lifecycle | Not started | | Rename, archive, pin, snooze, delete |
 | Agent hardening | Not started | | Stable output, redaction, fake-server tests |
 

@@ -51,9 +51,9 @@ The work is complete when an agent can use documented commands to identify a mac
 ### 5. Control active work
 
 - [x] Stop or interrupt an active turn and verify it stopped.
-- [ ] Answer an approval request and verify T3 accepted the response.
-- [ ] Answer or dismiss a user-input request and verify the pending state cleared.
-- [ ] Make retries safe so an agent cannot accidentally submit the same response twice.
+- [x] Answer an approval request and verify T3 accepted the response.
+- [x] Answer or dismiss a user-input request and verify the pending state cleared.
+- [x] Make retries safe so an agent cannot accidentally submit the same response twice.
 
 ### 6. Manage thread lifecycle
 
