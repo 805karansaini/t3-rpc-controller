@@ -92,6 +92,7 @@ The work is complete when an agent can use documented commands to identify a mac
 - [x] Preserve changed stream snapshots, stop immediately for resumed terminal state, and bound connection cleanup.
 - [x] Return an explicit unknown result when a newer turn hides an older target's final state.
 - [x] Include snapshot reads in task-wait deadlines and tolerate temporarily missing latest-turn data.
+- [x] Prevent WebSocket shutdown from extending task-wait and RPC deadlines.
 
 ## Commit rhythm
 

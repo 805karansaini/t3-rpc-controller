@@ -3,11 +3,11 @@ import http.server
 import json
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from websockets.asyncio.server import serve
 
-from t3_rpc_controller import fetch_shell_snapshot, http_json, rpc_call
+from t3_rpc_controller import fetch_shell_snapshot, fetch_thread_snapshot, http_json, rpc_call
 
 
 class FakeT3Server:
@@ -134,6 +134,33 @@ class FakeT3Server:
 
 
 class TransportIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_thread_snapshot_disables_websocket_close_wait(self):
+        class Socket:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                return False
+
+            async def send(self, raw):
+                pass
+
+            async def recv(self):
+                await asyncio.sleep(1)
+
+        with (
+            patch(
+                "t3_controller.transport.request_ticket",
+                new=AsyncMock(return_value="ticket"),
+            ),
+            patch("t3_controller.transport.websockets.connect", return_value=Socket()) as connect,
+        ):
+            with self.assertRaises(asyncio.TimeoutError):
+                await fetch_thread_snapshot(
+                    "http://fake", "token", "thread-1", timeout=0.01
+                )
+        self.assertEqual(connect.call_args.kwargs["close_timeout"], 0)
+
     async def test_authenticated_rpc_uses_ticket_ping_and_headers(self):
         async with FakeT3Server() as fake:
             result = await rpc_call(fake.url, "fake-bearer", "server.probe", {})

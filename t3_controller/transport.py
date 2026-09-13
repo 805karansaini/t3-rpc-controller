@@ -113,6 +113,7 @@ async def rpc_call(
         async with websockets.connect(
             websocket_url(http_url, ticket),
             open_timeout=min(timeout, 15),
+            close_timeout=0,
         ) as socket:
             await socket.send(json.dumps({"_tag": "Ping"}))
             await socket.send(json.dumps(make_request(request_id, tag, payload)))
@@ -133,7 +134,9 @@ async def fetch_shell_snapshot(http_url: str, token: str) -> dict:
     async with asyncio.timeout(30):
         ticket = await request_ticket(http_url, token, 15)
         request_id = f"hermes-projects-{uuid.uuid4()}"
-        async with websockets.connect(websocket_url(http_url, ticket), open_timeout=15) as socket:
+        async with websockets.connect(
+            websocket_url(http_url, ticket), open_timeout=15, close_timeout=0
+        ) as socket:
             await socket.send(json.dumps({"_tag": "Ping"}))
             await socket.send(json.dumps(make_request(request_id, "orchestration.subscribeShell", {})))
             while True:
@@ -165,7 +168,9 @@ async def fetch_thread_snapshot(
         if turn_limit is not None:
             payload["turnLimit"] = turn_limit
         async with websockets.connect(
-            websocket_url(http_url, ticket), open_timeout=min(timeout, 15)
+            websocket_url(http_url, ticket),
+            open_timeout=min(timeout, 15),
+            close_timeout=0,
         ) as socket:
             await socket.send(json.dumps({"_tag": "Ping"}))
             await socket.send(
