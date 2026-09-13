@@ -61,8 +61,8 @@ The work is complete when an agent can use documented commands to identify a mac
 - [x] Archive and unarchive a thread.
 - [x] Pin, unpin, snooze, and unsnooze where supported.
 - [x] Settle and unsettle threads for T3's active-work workflow.
-- [ ] Delete a thread only with an explicit destructive flag and exact identity check.
-- [ ] Add read-only diff and history retrieval where supported.
+- [x] Delete a thread only with an explicit destructive flag and exact identity check.
+- [x] Add read-only diff and history retrieval where supported.
 
 ### 7. Make it dependable for autonomous agents
 

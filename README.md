@@ -228,6 +228,22 @@ Organize an active thread without deleting it:
 
 Snooze times must be in the future and include a timezone. Every command confirms the corresponding T3 state before it reports success.
 
+Read a focused conversation history or the filesystem diff represented by T3 checkpoints:
+
+```bash
+./t3_rpc_controller.py thread history mac THREAD_ID --turn-limit 100
+./t3_rpc_controller.py thread diff mac THREAD_ID --to-turn-count 4
+./t3_rpc_controller.py thread diff mac THREAD_ID --from-turn-count 1 --to-turn-count 4
+```
+
+Permanently delete a stopped thread only by repeating its exact identity:
+
+```bash
+./t3_rpc_controller.py thread delete mac THREAD_ID --confirm-thread-id THREAD_ID
+```
+
+Deletion refuses a mismatched confirmation and a thread with a running turn. It checks both the active and archived lists and reports success only after the thread has disappeared from both.
+
 Run tests:
 
 ```bash

@@ -1009,6 +1009,17 @@ async def find_shell_thread(
     return next((item for item in snapshot.get("threads", []) if item.get("id") == thread_id), None)
 
 
+async def find_any_shell_thread(
+    store: EnvironmentStore,
+    environment: str,
+    thread_id: str,
+) -> dict | None:
+    active = await find_shell_thread(store, environment, thread_id, archived=False)
+    if active is not None:
+        return active
+    return await find_shell_thread(store, environment, thread_id, archived=True)
+
+
 async def require_thread_snapshot(
     store: EnvironmentStore,
     environment: str,
@@ -1241,6 +1252,55 @@ async def thread_state_operation(
         "receipt": receipt,
         "thread": thread_row(confirmed["thread"], args.environment),
     }
+
+
+async def delete_thread_operation(store: EnvironmentStore, args: argparse.Namespace) -> dict:
+    if args.confirm_thread_id != args.thread_id:
+        raise ValueError("--confirm-thread-id must exactly match the thread ID")
+    before = await find_any_shell_thread(store, args.environment, args.thread_id)
+    if before is None:
+        raise ValueError(f"thread {args.thread_id} does not exist in environment {args.environment}")
+    if (before.get("latestTurn") or {}).get("state") == "running":
+        raise ValueError("refusing to delete a thread with a running turn; stop it first")
+    command = build_thread_lifecycle_command(args.thread_id, "delete")
+    receipt = await dispatch_command(store, args.environment, command)
+    deadline = time.monotonic() + 10
+    while True:
+        if await find_any_shell_thread(store, args.environment, args.thread_id) is None:
+            break
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"T3 did not confirm deletion of thread {args.thread_id}")
+        await asyncio.sleep(0.2)
+    return {
+        "ok": True,
+        "operation": command["type"],
+        "commandId": command["commandId"],
+        "receipt": receipt,
+        "environment": args.environment,
+        "threadId": args.thread_id,
+        "deleted": True,
+    }
+
+
+async def thread_diff_operation(store: EnvironmentStore, args: argparse.Namespace) -> dict:
+    await require_thread_snapshot(store, args.environment, args.thread_id, args.to_turn_count)
+    url, token = store.load(args.environment)
+    payload: dict[str, object] = {
+        "threadId": args.thread_id,
+        "toTurnCount": args.to_turn_count,
+        "ignoreWhitespace": args.ignore_whitespace,
+    }
+    if args.from_turn_count is None:
+        method = "orchestration.getFullThreadDiff"
+    else:
+        if args.from_turn_count > args.to_turn_count:
+            raise ValueError("--from-turn-count cannot exceed --to-turn-count")
+        payload["fromTurnCount"] = args.from_turn_count
+        method = "orchestration.getTurnDiff"
+    result = await rpc_call(url, token, method, payload)
+    if not isinstance(result, dict) or not isinstance(result.get("diff"), str):
+        raise RuntimeError("T3 returned an invalid thread diff")
+    return {"ok": True, "environment": args.environment, "method": method, **result}
 
 
 async def stop_thread_operation(store: EnvironmentStore, args: argparse.Namespace) -> dict:
@@ -1571,6 +1631,40 @@ def thread_state_command(store: EnvironmentStore, args: argparse.Namespace) -> i
     return 0
 
 
+def thread_delete_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
+    result = asyncio.run(delete_thread_operation(store, args))
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def thread_history_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
+    snapshot = asyncio.run(
+        require_thread_snapshot(store, args.environment, args.thread_id, args.turn_limit)
+    )
+    thread = snapshot["thread"]
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "environment": args.environment,
+                "threadId": args.thread_id,
+                "messages": thread.get("messages", []),
+                "activities": thread.get("activities", []),
+                "checkpoints": thread.get("checkpoints", []),
+                "proposedPlans": thread.get("proposedPlans", []),
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def thread_diff_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
+    result = asyncio.run(thread_diff_operation(store, args))
+    print(json.dumps(result, indent=2))
+    return 0
+
+
 def thread_pending_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
     snapshot = asyncio.run(
         require_thread_snapshot(store, args.environment, args.thread_id, args.turn_limit)
@@ -1804,6 +1898,30 @@ def build_parser() -> argparse.ArgumentParser:
     thread_snooze.add_argument("thread_id")
     thread_snooze.add_argument("--until", required=True, help="ISO 8601 date and time with timezone")
     thread_snooze.set_defaults(handler=thread_state_command)
+
+    thread_delete = thread_commands.add_parser("delete", help="permanently delete one stopped thread")
+    thread_delete.add_argument("environment")
+    thread_delete.add_argument("thread_id")
+    thread_delete.add_argument(
+        "--confirm-thread-id",
+        required=True,
+        help="must exactly repeat THREAD_ID",
+    )
+    thread_delete.set_defaults(handler=thread_delete_command)
+
+    thread_history = thread_commands.add_parser("history", help="read messages, activities, checkpoints, and plans")
+    thread_history.add_argument("environment")
+    thread_history.add_argument("thread_id")
+    thread_history.add_argument("--turn-limit", type=int, default=100)
+    thread_history.set_defaults(handler=thread_history_command)
+
+    thread_diff = thread_commands.add_parser("diff", help="read the filesystem diff through a turn count")
+    thread_diff.add_argument("environment")
+    thread_diff.add_argument("thread_id")
+    thread_diff.add_argument("--to-turn-count", type=int, required=True)
+    thread_diff.add_argument("--from-turn-count", type=int)
+    thread_diff.add_argument("--ignore-whitespace", action="store_true")
+    thread_diff.set_defaults(handler=thread_diff_command)
 
     thread_pending = thread_commands.add_parser("pending", help="list unresolved approvals and questions")
     thread_pending.add_argument("environment")

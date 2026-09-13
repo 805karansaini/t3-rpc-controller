@@ -354,6 +354,8 @@ class RpcProtocolTests(unittest.TestCase):
         archive = build_thread_lifecycle_command("t1", "archive")
         self.assertEqual(archive["type"], "thread.archive")
         self.assertEqual(archive["threadId"], "t1")
+        delete = build_thread_lifecycle_command("t1", "delete")
+        self.assertEqual(delete["type"], "thread.delete")
 
     def test_normalizes_future_snooze_time_and_rejects_naive_time(self):
         self.assertEqual(
