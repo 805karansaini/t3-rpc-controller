@@ -11,7 +11,9 @@ from t3_rpc_controller import (
     EnvironmentStore,
     bearer_token_from_bootstrap,
     bearer_token_from_oauth,
+    filter_thread_rows,
     first_shell_snapshot,
+    first_stream_snapshot,
     make_request,
     merge_environment_projects,
     normalize_url,
@@ -139,6 +141,38 @@ class RpcProtocolTests(unittest.TestCase):
             },
         ]
         self.assertEqual(first_shell_snapshot(messages, "req-1"), {"projects": [{"id": "p1"}]})
+
+    def test_extracts_thread_snapshot_from_stream_chunks(self):
+        message = {
+            "_tag": "Chunk",
+            "requestId": "req-2",
+            "values": [{"kind": "snapshot", "snapshot": {"thread": {"id": "t1"}}}],
+        }
+        self.assertEqual(first_stream_snapshot([message], "req-2"), {"thread": {"id": "t1"}})
+
+    def test_filters_threads_by_project_turn_state_and_pending_action(self):
+        rows = [
+            {
+                "id": "t1",
+                "projectId": "p1",
+                "latestTurn": {"state": "running"},
+                "hasPendingApprovals": True,
+                "hasPendingUserInput": False,
+                "updatedAt": "2026-09-13T10:00:00Z",
+            },
+            {
+                "id": "t2",
+                "projectId": "p2",
+                "latestTurn": {"state": "completed"},
+                "hasPendingApprovals": False,
+                "hasPendingUserInput": False,
+                "updatedAt": "2026-09-13T11:00:00Z",
+            },
+        ]
+        self.assertEqual(
+            [row["id"] for row in filter_thread_rows(rows, "p1", "running", "any")],
+            ["t1"],
+        )
 
     def test_merges_projects_without_deduplicating_across_machines(self):
         merged = merge_environment_projects(

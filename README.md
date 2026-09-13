@@ -97,6 +97,28 @@ Check authentication and native RPC access on every configured machine:
 
 Multi-machine reads include successful results and an `errors` object when one target is unavailable. The command exits with status 1 if any requested target failed, while preserving data returned by healthy targets.
 
+List recent thread summaries or narrow them to one machine, project, turn state, or pending action:
+
+```bash
+./t3_rpc_controller.py threads --limit 20
+./t3_rpc_controller.py threads --environment mac --project PROJECT_ID
+./t3_rpc_controller.py threads --turn-state running
+./t3_rpc_controller.py threads --pending any
+./t3_rpc_controller.py threads --scope archived
+```
+
+Read the latest turns and detailed state for one exact thread:
+
+```bash
+./t3_rpc_controller.py thread show mac THREAD_ID --turn-limit 20
+```
+
+Search user and assistant messages across one or every machine:
+
+```bash
+./t3_rpc_controller.py search "text to find" --environment mac --limit 20
+```
+
 Run tests:
 
 ```bash

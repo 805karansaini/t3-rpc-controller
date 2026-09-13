@@ -26,9 +26,9 @@ The work is complete when an agent can use documented commands to identify a mac
 
 ### 2. Add read-only discovery
 
-- [ ] List and filter threads by environment, project, status, and archived state.
-- [ ] Show one thread with its current task, model, provider, pending actions, and timestamps.
-- [ ] Search threads through T3's native search operation.
+- [x] List and filter threads by environment, project, status, and archived state.
+- [x] Show one thread with its current task, model, provider, pending actions, and timestamps.
+- [x] Search threads through T3's native search operation.
 - [ ] Discover provider instances and their available models.
 - [ ] Expose project defaults needed when creating a thread.
 

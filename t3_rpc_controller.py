@@ -107,6 +107,75 @@ def first_shell_snapshot(messages: list[dict], request_id: str) -> dict | None:
     return None
 
 
+def first_stream_snapshot(messages: list[dict], request_id: str) -> dict | None:
+    for message in messages:
+        if message.get("_tag") != "Chunk" or message.get("requestId") != request_id:
+            continue
+        for value in message.get("values", []):
+            if isinstance(value, dict) and value.get("kind") == "snapshot":
+                snapshot = value.get("snapshot")
+                if isinstance(snapshot, dict):
+                    return snapshot
+    return None
+
+
+def thread_row(thread: dict, environment: str) -> dict:
+    return {
+        "environment": environment,
+        "id": thread.get("id"),
+        "projectId": thread.get("projectId"),
+        "title": thread.get("title"),
+        "modelSelection": thread.get("modelSelection"),
+        "runtimeMode": thread.get("runtimeMode"),
+        "interactionMode": thread.get("interactionMode"),
+        "latestTurn": thread.get("latestTurn"),
+        "session": thread.get("session"),
+        "backgroundLiveness": thread.get("backgroundLiveness"),
+        "planProgress": thread.get("planProgress"),
+        "hasPendingApprovals": bool(thread.get("hasPendingApprovals")),
+        "hasPendingUserInput": bool(thread.get("hasPendingUserInput")),
+        "hasActionableProposedPlan": bool(thread.get("hasActionableProposedPlan")),
+        "archivedAt": thread.get("archivedAt"),
+        "settledAt": thread.get("settledAt"),
+        "snoozedUntil": thread.get("snoozedUntil"),
+        "pinnedAt": thread.get("pinnedAt"),
+        "createdAt": thread.get("createdAt"),
+        "updatedAt": thread.get("updatedAt"),
+    }
+
+
+def filter_thread_rows(
+    rows: list[dict],
+    project_id: str | None = None,
+    turn_state: str | None = None,
+    pending: str | None = None,
+) -> list[dict]:
+    filtered = rows
+    if project_id:
+        filtered = [row for row in filtered if row.get("projectId") == project_id]
+    if turn_state:
+        filtered = [
+            row
+            for row in filtered
+            if (row.get("latestTurn") or {}).get("state") == turn_state
+        ]
+    if pending == "approvals":
+        filtered = [row for row in filtered if row.get("hasPendingApprovals")]
+    elif pending == "input":
+        filtered = [row for row in filtered if row.get("hasPendingUserInput")]
+    elif pending == "any":
+        filtered = [
+            row
+            for row in filtered
+            if row.get("hasPendingApprovals") or row.get("hasPendingUserInput")
+        ]
+    return sorted(
+        filtered,
+        key=lambda row: (str(row.get("updatedAt", "")), str(row.get("id", ""))),
+        reverse=True,
+    )
+
+
 def merge_environment_projects(projects_by_environment: dict[str, list[dict]]) -> list[dict]:
     merged = [
         {"environment": environment, **project}
@@ -267,10 +336,122 @@ async def fetch_shell_snapshot(http_url: str, token: str) -> dict:
                 raise RuntimeError("T3 RPC stream ended before returning a shell snapshot")
 
 
+async def fetch_thread_snapshot(
+    http_url: str,
+    token: str,
+    thread_id: str,
+    turn_limit: int | None = None,
+) -> dict:
+    ticket_result = await asyncio.to_thread(
+        http_json,
+        f"{http_url}/api/auth/websocket-ticket",
+        token,
+        "POST",
+    )
+    ticket = ticket_result.get("ticket")
+    if not isinstance(ticket, str) or not ticket:
+        raise RuntimeError("T3 did not return a WebSocket ticket")
+
+    request_id = f"t3-thread-{uuid.uuid4()}"
+    payload: dict[str, object] = {"threadId": thread_id}
+    if turn_limit is not None:
+        payload["turnLimit"] = turn_limit
+    async with websockets.connect(websocket_url(http_url, ticket), open_timeout=15) as socket:
+        await socket.send(json.dumps({"_tag": "Ping"}))
+        await socket.send(
+            json.dumps(make_request(request_id, "orchestration.subscribeThread", payload))
+        )
+        while True:
+            raw_message = await asyncio.wait_for(socket.recv(), timeout=30)
+            message = json.loads(raw_message)
+            snapshot = first_stream_snapshot([message], request_id)
+            if snapshot is not None:
+                return snapshot
+            if message.get("_tag") == "Exit" and message.get("requestId") == request_id:
+                exit_value = message.get("exit", {})
+                if exit_value.get("_tag") != "Success":
+                    raise RuntimeError(f"T3 RPC failed: {json.dumps(exit_value)}")
+                raise RuntimeError("T3 RPC stream ended before returning a thread snapshot")
+
+
+async def fetch_archived_shell_snapshot(http_url: str, token: str) -> dict:
+    result = await rpc_call(http_url, token, "orchestration.getArchivedShellSnapshot", {})
+    if not isinstance(result, dict):
+        raise RuntimeError("T3 returned an invalid archived shell snapshot")
+    return result
+
+
 async def list_projects(store: EnvironmentStore, name: str) -> list[dict]:
     url, token = store.load(name)
     snapshot = await fetch_shell_snapshot(url, token)
     return project_rows_from_snapshot(snapshot)
+
+
+async def list_threads(store: EnvironmentStore, name: str, scope: str) -> list[dict]:
+    url, token = store.load(name)
+    snapshots = []
+    if scope in {"active", "all"}:
+        snapshots.append(await fetch_shell_snapshot(url, token))
+    if scope in {"archived", "all"}:
+        snapshots.append(await fetch_archived_shell_snapshot(url, token))
+    by_id: dict[str, dict] = {}
+    for snapshot in snapshots:
+        for thread in snapshot.get("threads", []):
+            if isinstance(thread, dict) and isinstance(thread.get("id"), str):
+                by_id[thread["id"]] = thread_row(thread, name)
+    return list(by_id.values())
+
+
+async def list_many_threads(
+    store: EnvironmentStore,
+    names: list[str],
+    scope: str,
+) -> tuple[dict[str, list[dict]], dict[str, str]]:
+    results = await asyncio.gather(
+        *(list_threads(store, name, scope) for name in names),
+        return_exceptions=True,
+    )
+    output: dict[str, list[dict]] = {}
+    errors: dict[str, str] = {}
+    for name, result in zip(names, results, strict=True):
+        if isinstance(result, BaseException):
+            errors[name] = str(result)
+        else:
+            output[name] = result
+    return output, errors
+
+
+async def search_environment(store: EnvironmentStore, name: str, query: str, limit: int) -> list[dict]:
+    url, token = store.load(name)
+    result = await rpc_call(
+        url,
+        token,
+        "orchestration.searchThreads",
+        {"query": query, "limit": limit},
+    )
+    if not isinstance(result, dict) or not isinstance(result.get("matches"), list):
+        raise RuntimeError("T3 returned an invalid thread search result")
+    return [{"environment": name, **match} for match in result["matches"]]
+
+
+async def search_many_environments(
+    store: EnvironmentStore,
+    names: list[str],
+    query: str,
+    limit: int,
+) -> tuple[list[dict], dict[str, str]]:
+    results = await asyncio.gather(
+        *(search_environment(store, name, query, limit) for name in names),
+        return_exceptions=True,
+    )
+    matches: list[dict] = []
+    errors: dict[str, str] = {}
+    for name, result in zip(names, results, strict=True):
+        if isinstance(result, BaseException):
+            errors[name] = str(result)
+        else:
+            matches.extend(result)
+    return matches, errors
 
 
 async def list_many_projects(
@@ -377,6 +558,42 @@ def health_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def threads_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
+    names = store.names() if not args.environment or args.environment == ["all"] else args.environment
+    if not names:
+        raise RuntimeError("no environments configured")
+    threads_by_environment, errors = asyncio.run(list_many_threads(store, names, args.scope))
+    rows = [row for environment_rows in threads_by_environment.values() for row in environment_rows]
+    rows = filter_thread_rows(rows, args.project, args.turn_state, args.pending)
+    if args.limit is not None:
+        rows = rows[: args.limit]
+    result = {
+        "ok": not errors,
+        "count": len(rows),
+        "threads": rows,
+        "errors": errors,
+    }
+    print(json.dumps(result, indent=2))
+    return 0 if not errors else 1
+
+
+def thread_show_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
+    url, token = store.load(args.environment)
+    snapshot = asyncio.run(fetch_thread_snapshot(url, token, args.thread_id, args.turn_limit))
+    print(json.dumps({"ok": True, "environment": args.environment, **snapshot}, indent=2))
+    return 0
+
+
+def search_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
+    names = store.names() if not args.environment or args.environment == ["all"] else args.environment
+    if not names:
+        raise RuntimeError("no environments configured")
+    matches, errors = asyncio.run(search_many_environments(store, names, args.query, args.limit))
+    matches.sort(key=lambda match: str(match.get("messageCreatedAt", "")), reverse=True)
+    print(json.dumps({"ok": not errors, "count": len(matches), "matches": matches, "errors": errors}, indent=2))
+    return 0 if not errors else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Native T3 HTTP/WebSocket RPC controller")
     parser.add_argument("--home", type=Path, default=DEFAULT_HOME, help="controller state directory")
@@ -405,6 +622,29 @@ def build_parser() -> argparse.ArgumentParser:
     projects = subparsers.add_parser("projects", help="list T3 projects over native RPC")
     projects.add_argument("--environment", action="append")
     projects.set_defaults(handler=projects_command)
+
+    threads = subparsers.add_parser("threads", help="list and filter T3 threads")
+    threads.add_argument("--environment", action="append")
+    threads.add_argument("--project", help="only return threads in this exact project ID")
+    threads.add_argument("--scope", choices=["active", "archived", "all"], default="active")
+    threads.add_argument("--turn-state", choices=["running", "completed", "interrupted", "error"])
+    threads.add_argument("--pending", choices=["approvals", "input", "any"])
+    threads.add_argument("--limit", type=int)
+    threads.set_defaults(handler=threads_command)
+
+    thread = subparsers.add_parser("thread", help="inspect or control one exact T3 thread")
+    thread_commands = thread.add_subparsers(dest="thread_command", required=True)
+    thread_show = thread_commands.add_parser("show", help="show detailed thread state and history")
+    thread_show.add_argument("environment")
+    thread_show.add_argument("thread_id")
+    thread_show.add_argument("--turn-limit", type=int, default=20)
+    thread_show.set_defaults(handler=thread_show_command)
+
+    search = subparsers.add_parser("search", help="search user and assistant thread messages")
+    search.add_argument("query")
+    search.add_argument("--environment", action="append")
+    search.add_argument("--limit", type=int, default=20, choices=range(1, 51), metavar="1..50")
+    search.set_defaults(handler=search_command)
     return parser
 
 

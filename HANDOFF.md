@@ -37,7 +37,7 @@ Credential values are never recorded here. Local connection state lives under `.
 | --- | --- | --- | --- |
 | Baseline | Complete | `make check`, `make smoke`, and both-machine project query | First commit contains no local state or credentials |
 | Connectivity | In progress | `health`, safe environment output, partial project results | Transport failure tests and credential removal remain |
-| Discovery | Not started | | Threads, providers, models, search |
+| Discovery | In progress | `threads`, `thread show`, and `search` verified live | Provider and model discovery remain |
 | Monitoring | Not started | | Thread subscription and reconnect |
 | Task control | Not started | | Create, send, stop, approvals, questions |
 | Lifecycle | Not started | | Rename, archive, pin, snooze, delete |
