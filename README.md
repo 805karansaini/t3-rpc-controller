@@ -207,6 +207,15 @@ Inspect unresolved approval and user-input requests for one thread:
 ./t3_rpc_controller.py thread pending mac THREAD_ID
 ```
 
+Wait until a thread finishes or needs approval or input:
+
+```bash
+./t3_rpc_controller.py thread wait mac THREAD_ID --timeout 600
+./t3_rpc_controller.py thread wait mac THREAD_ID --message-id MESSAGE_UUID --timeout 600
+```
+
+Use the `messageId` returned by `thread send` when waiting for newly submitted work. This prevents an older completed turn from being mistaken for completion of the new task. A pending approval or question returns immediately with `reason: attention-required`. A completed turn exits successfully; an interrupted, failed, or timed-out turn exits with status 1.
+
 Interrupt the active turn, or stop the provider session completely:
 
 ```bash

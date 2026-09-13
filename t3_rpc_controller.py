@@ -170,6 +170,13 @@ def nonnegative_float(value: str) -> float:
     return parsed
 
 
+def positive_float(value: str) -> float:
+    parsed = float(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be greater than zero")
+    return parsed
+
+
 def make_request(request_id: str, tag: str, payload: object) -> dict:
     return {
         "_tag": "Request",
@@ -1402,6 +1409,7 @@ async def send_thread_operation(store: EnvironmentStore, args: argparse.Namespac
             "operation": "thread.turn.start",
             "commandId": command["commandId"],
             "messageId": message_id,
+            "turnId": existing_message.get("turnId"),
             "receipt": None,
             "reconciled": True,
             "thread": thread_row(thread, args.environment),
@@ -1429,11 +1437,17 @@ async def send_thread_operation(store: EnvironmentStore, args: argparse.Namespac
                 f"and --command-id {command['commandId']}"
             ) from dispatch_error
         raise confirmation_error
+    confirmed_message = next(
+        message
+        for message in confirmed["thread"].get("messages", [])
+        if message.get("id") == message_id
+    )
     return {
         "ok": True,
         "operation": "thread.turn.start",
         "commandId": command["commandId"],
         "messageId": message_id,
+        "turnId": confirmed_message.get("turnId"),
         "receipt": receipt,
         "reconciled": dispatch_error is not None,
         "thread": thread_row(confirmed["thread"], args.environment),
@@ -1689,6 +1703,77 @@ async def wait_for_request_cleared(
         if time.monotonic() >= deadline:
             raise RuntimeError(f"T3 did not confirm resolution of request {request_id}")
         await asyncio.sleep(0.2)
+
+
+async def wait_thread_operation(store: EnvironmentStore, args: argparse.Namespace) -> dict:
+    target_message_id = validate_uuid(getattr(args, "message_id", None), "--message-id")
+    deadline = None if args.timeout == 0 else time.monotonic() + args.timeout
+    target_turn_id = None
+    while True:
+        snapshot = await require_thread_snapshot(store, args.environment, args.thread_id, 100)
+        thread = snapshot["thread"]
+        pending = pending_requests_from_thread(thread)
+        if pending:
+            return {
+                "ok": True,
+                "operation": "thread.wait",
+                "reason": "attention-required",
+                "environment": args.environment,
+                "threadId": args.thread_id,
+                "pending": pending,
+                "thread": thread_row(thread, args.environment),
+            }
+
+        if target_message_id:
+            message = next(
+                (
+                    message
+                    for message in thread.get("messages", [])
+                    if message.get("id") == target_message_id
+                ),
+                None,
+            )
+            if message is None:
+                raise ValueError(
+                    f"message {target_message_id} does not exist on thread {args.thread_id}"
+                )
+            if message.get("role") != "user":
+                raise ValueError(f"message {target_message_id} is not a user task")
+            if isinstance(message.get("turnId"), str):
+                target_turn_id = message["turnId"]
+
+        latest_turn = thread.get("latestTurn") or {}
+        latest_turn_id = latest_turn.get("turnId")
+        latest_state = latest_turn.get("state")
+        matches_target = target_message_id is None or (
+            target_turn_id is not None and latest_turn_id == target_turn_id
+        )
+        if matches_target and latest_state and latest_state != "running":
+            ok = latest_state == "completed"
+            return {
+                "ok": ok,
+                "operation": "thread.wait",
+                "reason": "terminal-state",
+                "environment": args.environment,
+                "threadId": args.thread_id,
+                "messageId": target_message_id,
+                "turnId": latest_turn_id,
+                "turnState": latest_state,
+                "thread": thread_row(thread, args.environment),
+            }
+
+        if deadline is not None and time.monotonic() >= deadline:
+            return {
+                "ok": False,
+                "operation": "thread.wait",
+                "reason": "timeout",
+                "environment": args.environment,
+                "threadId": args.thread_id,
+                "messageId": target_message_id,
+                "turnId": target_turn_id,
+                "thread": thread_row(thread, args.environment),
+            }
+        await asyncio.sleep(args.poll_interval)
 
 
 async def approval_response_operation(store: EnvironmentStore, args: argparse.Namespace) -> dict:
@@ -2118,6 +2203,12 @@ def thread_pending_command(store: EnvironmentStore, args: argparse.Namespace) ->
     return 0
 
 
+def thread_wait_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
+    result = asyncio.run(wait_thread_operation(store, args))
+    emit_json(result, indent=2)
+    return 0 if result.get("ok") is True else 1
+
+
 def thread_stop_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
     result = asyncio.run(stop_thread_operation(store, args))
     emit_json(result, indent=2)
@@ -2422,6 +2513,20 @@ def build_parser() -> argparse.ArgumentParser:
     thread_pending.add_argument("thread_id")
     thread_pending.add_argument("--turn-limit", type=positive_int, default=20)
     thread_pending.set_defaults(handler=thread_pending_command)
+
+    thread_wait = thread_commands.add_parser(
+        "wait",
+        help="wait until a thread finishes or needs approval or input",
+    )
+    thread_wait.add_argument("environment")
+    thread_wait.add_argument("thread_id")
+    thread_wait.add_argument(
+        "--message-id",
+        help="wait for the exact user task created by thread send",
+    )
+    thread_wait.add_argument("--timeout", type=nonnegative_float, default=600)
+    thread_wait.add_argument("--poll-interval", type=positive_float, default=0.5)
+    thread_wait.set_defaults(handler=thread_wait_command)
 
     thread_stop = thread_commands.add_parser("stop", help="interrupt a running turn or stop its provider session")
     thread_stop.add_argument("environment")

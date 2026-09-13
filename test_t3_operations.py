@@ -18,6 +18,7 @@ from t3_rpc_controller import (
     stop_thread_operation,
     thread_state_operation,
     user_input_response_operation,
+    wait_thread_operation,
     wait_for_request_cleared,
 )
 
@@ -176,6 +177,72 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(predicate({**exact, "title": "Wrong"}))
         self.assertFalse(predicate({**exact, "runtimeMode": "full-access"}))
         self.assertEqual(result["thread"]["projectId"], "p1")
+
+    async def test_wait_tracks_the_submitted_message_instead_of_an_old_turn(self):
+        message_id = "22222222-2222-4222-8222-222222222222"
+        old = {
+            "id": "t1",
+            "messages": [{"id": message_id, "role": "user", "text": "Work"}],
+            "activities": [],
+            "latestTurn": {"turnId": "old-turn", "state": "completed"},
+        }
+        running = {
+            **old,
+            "messages": [
+                {"id": message_id, "role": "user", "text": "Work", "turnId": "target-turn"}
+            ],
+            "latestTurn": {"turnId": "target-turn", "state": "running"},
+        }
+        completed = {
+            **running,
+            "latestTurn": {"turnId": "target-turn", "state": "completed"},
+        }
+        command_args = args(
+            environment="mac",
+            thread_id="t1",
+            message_id=message_id,
+            timeout=10,
+            poll_interval=0.01,
+        )
+        with (
+            patch(
+                "t3_rpc_controller.require_thread_snapshot",
+                new=AsyncMock(
+                    side_effect=[{"thread": old}, {"thread": running}, {"thread": completed}]
+                ),
+            ),
+            patch("t3_rpc_controller.asyncio.sleep", new=AsyncMock()),
+        ):
+            result = await wait_thread_operation(object(), command_args)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["turnId"], "target-turn")
+
+    async def test_wait_returns_pending_attention_before_terminal_state(self):
+        message_id = "22222222-2222-4222-8222-222222222222"
+        thread = {
+            "id": "t1",
+            "messages": [
+                {"id": message_id, "role": "user", "text": "Work", "turnId": "target-turn"}
+            ],
+            "latestTurn": {"turnId": "target-turn", "state": "running"},
+            "activities": [
+                {"kind": "approval.requested", "payload": {"requestId": "approval-1"}}
+            ],
+        }
+        command_args = args(
+            environment="mac",
+            thread_id="t1",
+            message_id=message_id,
+            timeout=10,
+            poll_interval=0.01,
+        )
+        with patch(
+            "t3_rpc_controller.require_thread_snapshot",
+            new=AsyncMock(return_value={"thread": thread}),
+        ):
+            result = await wait_thread_operation(object(), command_args)
+        self.assertEqual(result["reason"], "attention-required")
+        self.assertEqual(result["pending"][0]["requestId"], "approval-1")
 
     async def test_send_uses_codex_and_safe_runtime_default(self):
         thread = {
