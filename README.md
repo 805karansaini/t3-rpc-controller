@@ -22,7 +22,7 @@ A self-contained controller for reading and orchestrating multiple T3 Code serve
         └── i7                 # bearer secret, mode 0600
 ```
 
-The script resolves `.state` relative to its own file, so it works regardless of the caller's current directory. `.state` is mandatory for existing connections and moves with the controller. It is excluded by `.gitignore` because it contains bearer credentials.
+When run from this checkout, the controller uses the repository's `.state` directory regardless of the caller's current directory. A standalone installation uses `~/.local/state/t3-rpc-controller` instead of writing inside `site-packages`. Set `T3_CONTROLLER_HOME` or pass `--home` to use an explicit location. The repository's `.state` is excluded by `.gitignore` because it contains bearer credentials.
 
 Expected permissions:
 
@@ -196,7 +196,7 @@ For a submission that may need to be retried, reuse one message UUID and command
   --message-id MESSAGE_UUID --command-id COMMAND_UUID
 ```
 
-The controller reads the thread after an uncertain dispatch. If the exact user message is present, it reports `reconciled: true`. Repeating the command with the same identifiers returns the existing message rather than submitting it again. Reusing a message ID with different text is rejected.
+The controller reads the thread after an uncertain dispatch. If the exact user message is present, it reports `reconciled: true`. Repeating the command with the same identifiers returns the existing message rather than submitting it again. Reusing a message ID with different text is rejected. If dispatch returns but confirmation cannot be read, the JSON error has category `uncertain_result` and includes the exact identifiers under `error.retry`; reuse those identifiers on the next attempt.
 
 Change the provider and model for an existing thread:
 

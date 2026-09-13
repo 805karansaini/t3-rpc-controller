@@ -55,11 +55,33 @@ from t3_rpc_controller import (
     list_many_projects,
     main,
 )
+from t3_controller.output import UncertainDispatchError
+from t3_controller.state import default_home
 
 
 class EnvironmentStoreTests(unittest.TestCase):
     def test_default_state_is_self_contained_beside_controller(self):
         self.assertEqual(DEFAULT_HOME, Path(__file__).resolve().parent / ".state")
+
+    def test_explicit_state_home_overrides_install_location(self):
+        with patch.dict(os.environ, {"T3_CONTROLLER_HOME": "/tmp/t3-controller-state"}):
+            self.assertEqual(default_home(), Path("/tmp/t3-controller-state"))
+
+    def test_uncertain_result_exposes_machine_readable_retry_ids(self):
+        error_output = io.StringIO()
+        retry = {"messageId": "message-1", "commandId": "command-1"}
+        with (
+            patch(
+                "t3_rpc_controller.thread_show_command",
+                side_effect=UncertainDispatchError("confirmation failed", retry),
+            ),
+            redirect_stderr(error_output),
+        ):
+            result = main(["thread", "show", "mac", "thread-1"])
+        error = json.loads(error_output.getvalue())
+        self.assertEqual(result, 1)
+        self.assertEqual(error["error"]["category"], "uncertain_result")
+        self.assertEqual(error["error"]["retry"], retry)
 
     def test_pairing_credential_uses_visible_input(self):
         with patch("builtins.input", return_value="  one-time-token  ") as visible_input:

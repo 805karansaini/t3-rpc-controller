@@ -19,6 +19,7 @@ from t3_controller.output import (
     error_category,
     redact_sensitive,
     safe_error_message,
+    UncertainDispatchError,
 )
 from t3_controller.state import DEFAULT_HOME, EnvironmentStore, normalize_url
 from t3_controller.transport import (
@@ -521,6 +522,31 @@ async def follow_thread(
     initial_snapshot_emitted = False
     reconnects = 0
 
+    async def within_deadline(awaitable):
+        if deadline is None:
+            return await awaitable
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise asyncio.TimeoutError
+        return await asyncio.wait_for(awaitable, timeout=remaining)
+
+    try:
+        snapshot_timeout = 30 if deadline is None else max(0.001, deadline - time.monotonic())
+        initial = await within_deadline(
+            fetch_thread_snapshot(
+                http_url, token, thread_id, turn_limit, timeout=snapshot_timeout
+            )
+        )
+    except asyncio.TimeoutError as error:
+        raise RuntimeError(
+            "T3 thread subscription timed out before initial synchronization"
+        ) from error
+    initial_thread = initial.get("thread") or {}
+    if initial_thread.get("id") != thread_id:
+        raise RuntimeError(f"T3 did not return the requested thread {thread_id}")
+    emit_json(thread_snapshot_summary(initial, environment), flush=True)
+    initial_snapshot_emitted = True
+
     while True:
         if deadline is not None and time.monotonic() >= deadline:
             if not synchronized:
@@ -535,11 +561,18 @@ async def follow_thread(
                 "reconnects": reconnects,
             }
         try:
-            ticket_result = await asyncio.to_thread(
-                http_json,
-                f"{http_url}/api/auth/websocket-ticket",
-                token,
-                "POST",
+            ticket_timeout = 15 if deadline is None else max(
+                0.001, deadline - time.monotonic()
+            )
+            ticket_result = await within_deadline(
+                asyncio.to_thread(
+                    http_json,
+                    f"{http_url}/api/auth/websocket-ticket",
+                    token,
+                    "POST",
+                    None,
+                    ticket_timeout,
+                )
             )
             if not isinstance(ticket_result, dict):
                 raise RuntimeError("T3 returned an invalid WebSocket ticket response")
@@ -554,10 +587,15 @@ async def follow_thread(
             }
             if last_sequence is not None:
                 payload["afterSequence"] = last_sequence
-            async with websockets.connect(websocket_url(http_url, ticket), open_timeout=15) as socket:
-                await socket.send(json.dumps({"_tag": "Ping"}))
-                await socket.send(
-                    json.dumps(make_request(request_id, "orchestration.subscribeThread", payload))
+            open_timeout = 15 if deadline is None else max(0.001, deadline - time.monotonic())
+            async with websockets.connect(
+                websocket_url(http_url, ticket), open_timeout=open_timeout
+            ) as socket:
+                await within_deadline(socket.send(json.dumps({"_tag": "Ping"})))
+                await within_deadline(
+                    socket.send(
+                        json.dumps(make_request(request_id, "orchestration.subscribeThread", payload))
+                    )
                 )
                 while True:
                     remaining = None if deadline is None else max(0.001, deadline - time.monotonic())
@@ -659,7 +697,9 @@ async def follow_thread(
                                 "events": emitted_events,
                                 "reconnects": reconnects,
                             }
-                    await socket.send(json.dumps({"_tag": "Ack", "requestId": request_id}))
+                    await within_deadline(
+                        socket.send(json.dumps({"_tag": "Ack", "requestId": request_id}))
+                    )
         except asyncio.TimeoutError:
             if not synchronized:
                 raise RuntimeError("T3 thread subscription timed out before initial synchronization")
@@ -678,7 +718,10 @@ async def follow_thread(
                     f"T3 thread subscription disconnected after {reconnects} reconnects: {error}"
                 ) from error
             reconnects += 1
-            await asyncio.sleep(min(2**reconnects, 5))
+            delay = min(2**reconnects, 5)
+            if deadline is not None:
+                delay = min(delay, max(0, deadline - time.monotonic()))
+            await asyncio.sleep(delay)
 
 
 async def fetch_archived_shell_snapshot(http_url: str, token: str) -> dict:
@@ -1042,12 +1085,10 @@ async def create_thread_operation(store: EnvironmentStore, args: argparse.Namesp
             lambda thread: thread_matches_create_command(thread, command),
         )
     except Exception as confirmation_error:
-        if dispatch_error is not None:
-            raise RuntimeError(
-                f"T3 thread creation result is unknown; retry with --thread-id {thread_id} "
-                f"and --command-id {command['commandId']}"
-            ) from dispatch_error
-        raise confirmation_error
+        raise UncertainDispatchError(
+            "T3 thread creation may have succeeded, but confirmation failed",
+            {"threadId": thread_id, "commandId": command["commandId"]},
+        ) from (dispatch_error or confirmation_error)
     return {
         "ok": True,
         "operation": "thread.create",
@@ -1139,12 +1180,10 @@ async def send_thread_operation(store: EnvironmentStore, args: argparse.Namespac
             text,
         )
     except Exception as confirmation_error:
-        if dispatch_error is not None:
-            raise RuntimeError(
-                f"T3 task submission result is unknown; retry with --message-id {message_id} "
-                f"and --command-id {command['commandId']}"
-            ) from dispatch_error
-        raise confirmation_error
+        raise UncertainDispatchError(
+            "T3 task submission may have succeeded, but confirmation failed",
+            {"messageId": message_id, "commandId": command["commandId"]},
+        ) from (dispatch_error or confirmation_error)
     confirmed_message = next(
         message
         for message in confirmed["thread"].get("messages", [])
@@ -1462,8 +1501,15 @@ async def wait_thread_operation(store: EnvironmentStore, args: argparse.Namespac
         matches_target = target_message_id is None or (
             target_turn_id is not None and latest_turn_id == target_turn_id
         )
-        if matches_target and latest_state in {"completed", "interrupted", "error"}:
-            ok = latest_state == "completed"
+        target_state = latest_state if matches_target else None
+        if target_message_id and target_turn_id and target_state is None:
+            if any(
+                message.get("role") == "assistant" and message.get("turnId") == target_turn_id
+                for message in thread.get("messages", [])
+            ):
+                target_state = "completed"
+        if target_state in {"completed", "interrupted", "error"}:
+            ok = target_state == "completed"
             return {
                 "ok": ok,
                 "operation": "thread.wait",
@@ -1471,8 +1517,8 @@ async def wait_thread_operation(store: EnvironmentStore, args: argparse.Namespac
                 "environment": args.environment,
                 "threadId": args.thread_id,
                 "messageId": target_message_id,
-                "turnId": latest_turn_id,
-                "turnState": latest_state,
+                "turnId": target_turn_id or latest_turn_id,
+                "turnState": target_state,
                 "thread": thread_row(thread, args.environment),
             }
 
@@ -2367,6 +2413,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.handler(store, args)
     except Exception as error:
+        details = {}
+        if isinstance(error, UncertainDispatchError):
+            details["retry"] = error.retry
         print(
             json.dumps(
                 {
@@ -2375,6 +2424,7 @@ def main(argv: list[str] | None = None) -> int:
                     "error": {
                         "category": error_category(error),
                         "message": safe_error_message(error),
+                        **details,
                     },
                 }
             ),

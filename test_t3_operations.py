@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import io
 import json
+import time
 import unittest
 from contextlib import redirect_stdout
 from unittest.mock import AsyncMock, patch
@@ -22,6 +23,7 @@ from t3_rpc_controller import (
     wait_thread_operation,
     wait_for_request_cleared,
 )
+from t3_controller.output import UncertainDispatchError
 
 
 def args(**values):
@@ -74,6 +76,10 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
         second = Socket([[snapshot, event_1, event_2]])
         output = io.StringIO()
         with (
+            patch(
+                "t3_rpc_controller.fetch_thread_snapshot",
+                new=AsyncMock(return_value=snapshot["snapshot"]),
+            ),
             patch("t3_rpc_controller.asyncio.to_thread", new=AsyncMock(return_value={"ticket": "t"})),
             patch("t3_rpc_controller.websockets.connect", side_effect=[first, second]) as connect,
             patch("t3_rpc_controller.asyncio.sleep", new=AsyncMock()),
@@ -121,6 +127,10 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
                 raise asyncio.TimeoutError()
 
         with (
+            patch(
+                "t3_rpc_controller.fetch_thread_snapshot",
+                new=AsyncMock(side_effect=asyncio.TimeoutError()),
+            ),
             patch("t3_rpc_controller.asyncio.to_thread", new=AsyncMock(return_value={"ticket": "t"})),
             patch("t3_rpc_controller.websockets.connect", return_value=Socket()),
         ):
@@ -136,6 +146,37 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
                     until_terminal=False,
                     turn_limit=20,
                 )
+
+    async def test_follow_timeout_includes_reconnect_backoff(self):
+        class Store:
+            @staticmethod
+            def load(environment):
+                return "http://fake", "fake-token"
+
+        snapshot = {"thread": {"id": "t1", "messages": [], "activities": []}}
+        with (
+            patch(
+                "t3_rpc_controller.fetch_thread_snapshot",
+                new=AsyncMock(return_value=snapshot),
+            ),
+            patch("t3_rpc_controller.asyncio.to_thread", new=AsyncMock(return_value={"ticket": "t"})),
+            patch("t3_rpc_controller.websockets.connect", side_effect=OSError("offline")),
+            redirect_stdout(io.StringIO()),
+        ):
+            started = time.monotonic()
+            with self.assertRaisesRegex(RuntimeError, "before initial synchronization"):
+                await follow_thread(
+                    Store(),
+                    "mac",
+                    "t1",
+                    after_sequence=10,
+                    timeout=0.05,
+                    max_events=None,
+                    retries=3,
+                    until_terminal=False,
+                    turn_limit=20,
+                )
+        self.assertLess(time.monotonic() - started, 0.3)
 
     async def test_create_validates_every_requested_field_on_readback(self):
         command_args = args(
@@ -254,6 +295,96 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
             result = await wait_thread_operation(object(), command_args)
         self.assertEqual(result["reason"], "attention-required")
         self.assertEqual(result["pending"][0]["requestId"], "approval-1")
+
+    async def test_wait_recognizes_target_completion_after_a_newer_turn(self):
+        message_id = "22222222-2222-4222-8222-222222222222"
+        thread = {
+            "id": "t1",
+            "messages": [
+                {"id": message_id, "role": "user", "text": "Work", "turnId": "target-turn"},
+                {"id": "answer", "role": "assistant", "text": "Done", "turnId": "target-turn"},
+            ],
+            "latestTurn": {"turnId": "newer-turn", "state": "running"},
+            "activities": [],
+        }
+        command_args = args(
+            environment="mac",
+            thread_id="t1",
+            message_id=message_id,
+            timeout=10,
+            poll_interval=0.01,
+        )
+        with patch(
+            "t3_rpc_controller.require_thread_snapshot",
+            new=AsyncMock(return_value={"thread": thread}),
+        ):
+            result = await wait_thread_operation(object(), command_args)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["turnId"], "target-turn")
+        self.assertEqual(result["turnState"], "completed")
+
+    async def test_confirmation_failure_preserves_generated_create_retry_ids(self):
+        command_args = args(
+            environment="mac",
+            project_id="p1",
+            title="Task",
+            provider="codex",
+            model="gpt-test",
+            runtime_mode="approval-required",
+            interaction_mode="default",
+            branch=None,
+            worktree_path=None,
+            thread_id=None,
+            command_id=None,
+            dry_run=False,
+        )
+        with (
+            patch("t3_rpc_controller.validate_project_and_model", new=AsyncMock()),
+            patch("t3_rpc_controller.dispatch_command", new=AsyncMock(return_value={"sequence": 1})),
+            patch(
+                "t3_rpc_controller.wait_for_shell_thread",
+                new=AsyncMock(side_effect=OSError("readback failed")),
+            ),
+        ):
+            with self.assertRaises(UncertainDispatchError) as caught:
+                await create_thread_operation(object(), command_args)
+        self.assertIn("threadId", caught.exception.retry)
+        self.assertIn("commandId", caught.exception.retry)
+
+    async def test_confirmation_failure_preserves_generated_send_retry_ids(self):
+        thread = {
+            "id": "t1",
+            "modelSelection": {"instanceId": "codex", "model": "gpt-test"},
+            "runtimeMode": "approval-required",
+            "interactionMode": "default",
+            "messages": [],
+        }
+        command_args = args(
+            environment="mac",
+            thread_id="t1",
+            provider=None,
+            model=None,
+            runtime_mode=None,
+            interaction_mode=None,
+            message_id=None,
+            command_id=None,
+            dry_run=False,
+        )
+        with (
+            patch(
+                "t3_rpc_controller.require_thread_snapshot",
+                new=AsyncMock(return_value={"thread": thread}),
+            ),
+            patch("t3_rpc_controller.dispatch_command", new=AsyncMock(return_value={"sequence": 1})),
+            patch(
+                "t3_rpc_controller.wait_for_thread_message",
+                new=AsyncMock(side_effect=OSError("readback failed")),
+            ),
+        ):
+            with self.assertRaises(UncertainDispatchError) as caught:
+                await send_thread_operation(object(), command_args, "Do work")
+        self.assertIn("messageId", caught.exception.retry)
+        self.assertIn("commandId", caught.exception.retry)
 
     async def test_run_submits_then_waits_for_the_exact_message(self):
         message_id = "22222222-2222-4222-8222-222222222222"

@@ -7,7 +7,19 @@ from urllib.parse import urlparse
 
 
 ENV_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
-DEFAULT_HOME = Path(__file__).resolve().parent.parent / ".state"
+
+
+def default_home() -> Path:
+    configured = os.environ.get("T3_CONTROLLER_HOME")
+    if configured:
+        return Path(configured).expanduser()
+    checkout_home = Path(__file__).resolve().parent.parent / ".state"
+    if checkout_home.exists() or (checkout_home.parent / ".git").exists():
+        return checkout_home
+    return Path.home() / ".local" / "state" / "t3-rpc-controller"
+
+
+DEFAULT_HOME = default_home()
 
 
 def normalize_url(url: str) -> str:

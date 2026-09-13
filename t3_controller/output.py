@@ -12,6 +12,12 @@ SENSITIVE_KEY_RE = re.compile(
 )
 
 
+class UncertainDispatchError(RuntimeError):
+    def __init__(self, message: str, retry: dict[str, str]):
+        super().__init__(message)
+        self.retry = retry
+
+
 def redact_sensitive(value: object) -> object:
     if isinstance(value, dict):
         return {
@@ -33,6 +39,8 @@ def safe_error_message(error: object) -> str:
 
 
 def error_category(error: BaseException) -> str:
+    if isinstance(error, UncertainDispatchError):
+        return "uncertain_result"
     if isinstance(error, (ValueError, KeyError)):
         return "invalid_request"
     if isinstance(error, FileNotFoundError):

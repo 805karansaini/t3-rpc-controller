@@ -41,6 +41,7 @@ def http_json(
     token: str | None,
     method: str = "GET",
     payload: dict | None = None,
+    timeout: float = 15,
 ) -> dict:
     body = None if payload is None else json.dumps(payload).encode()
     headers = {}
@@ -50,7 +51,7 @@ def http_json(
         headers["Content-Type"] = "application/json"
     request = urllib.request.Request(url, data=body, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=15) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.load(response)
     except urllib.error.HTTPError as error:
         parsed = urlparse(url)
@@ -82,12 +83,14 @@ def websocket_url(http_url: str, ticket: str) -> str:
     return f"{scheme}://{parsed.netloc}/ws?wsTicket={ticket}"
 
 
-async def request_ticket(http_url: str, token: str) -> str:
+async def request_ticket(http_url: str, token: str, timeout: float = 15) -> str:
     ticket_result = await asyncio.to_thread(
         http_json,
         f"{http_url}/api/auth/websocket-ticket",
         token,
         "POST",
+        None,
+        timeout,
     )
     if not isinstance(ticket_result, dict):
         raise RuntimeError("T3 returned an invalid WebSocket ticket response")
@@ -105,7 +108,7 @@ async def rpc_call(
     timeout: float = 30,
 ) -> object:
     async with asyncio.timeout(timeout):
-        ticket = await request_ticket(http_url, token)
+        ticket = await request_ticket(http_url, token, min(timeout, 15))
         request_id = f"t3-controller-{uuid.uuid4()}"
         async with websockets.connect(
             websocket_url(http_url, ticket),
@@ -128,7 +131,7 @@ async def rpc_call(
 
 async def fetch_shell_snapshot(http_url: str, token: str) -> dict:
     async with asyncio.timeout(30):
-        ticket = await request_ticket(http_url, token)
+        ticket = await request_ticket(http_url, token, 15)
         request_id = f"hermes-projects-{uuid.uuid4()}"
         async with websockets.connect(websocket_url(http_url, ticket), open_timeout=15) as socket:
             await socket.send(json.dumps({"_tag": "Ping"}))
@@ -153,14 +156,17 @@ async def fetch_thread_snapshot(
     token: str,
     thread_id: str,
     turn_limit: int | None = None,
+    timeout: float = 30,
 ) -> dict:
-    async with asyncio.timeout(30):
-        ticket = await request_ticket(http_url, token)
+    async with asyncio.timeout(timeout):
+        ticket = await request_ticket(http_url, token, min(timeout, 15))
         request_id = f"t3-thread-{uuid.uuid4()}"
         payload: dict[str, object] = {"threadId": thread_id}
         if turn_limit is not None:
             payload["turnLimit"] = turn_limit
-        async with websockets.connect(websocket_url(http_url, ticket), open_timeout=15) as socket:
+        async with websockets.connect(
+            websocket_url(http_url, ticket), open_timeout=min(timeout, 15)
+        ) as socket:
             await socket.send(json.dumps({"_tag": "Ping"}))
             await socket.send(
                 json.dumps(make_request(request_id, "orchestration.subscribeThread", payload))

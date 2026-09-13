@@ -7,8 +7,8 @@ Build a command-line controller that lets an agent operate T3 Code on the Mac an
 ## Current status
 
 - The controller now covers environment setup, discovery, task dispatch, monitoring, intervention, lifecycle management, history, and diffs.
-- Task creation and submission can be retried with stable identifiers, and uncertain replies are reconciled against T3 state.
-- `thread wait` and `thread run` track the exact submitted message and return when work completes or needs attention.
+- Task creation and submission preserve stable retry identifiers even when dispatch succeeds but confirmation cannot be read, and uncertain replies are reconciled against T3 state.
+- `thread wait` and `thread run` track the exact submitted message, including after a newer turn starts, and return when work completes or needs attention.
 - The native authenticated connection and compatibility checks pass against both configured machines.
 - Version control, repeatable checks, the completed roadmap, and a reviewable decision trail are in place.
 - See `ROADMAP.md` for the ordered checklist and `decisions.tsv` for evidence behind completed checkpoints.
@@ -22,7 +22,7 @@ Build a command-line controller that lets an agent operate T3 Code on the Mac an
 - `mac` T3 server at loopback
 - `i7` T3 server over Tailscale
 
-Credential values are never recorded here. Local connection state lives under `.state`, which Git ignores.
+Credential values are never recorded here. This checkout's connection state lives under `.state`, which Git ignores. Standalone installs default to the user's local state directory and can be pointed at this state with `T3_CONTROLLER_HOME` or `--home`.
 
 ## Decisions
 
@@ -46,8 +46,8 @@ Credential values are never recorded here. Local connection state lives under `.
 | Monitoring | Complete | `thread follow` plus `thread pending` | Snapshot, events, timeout, resume, deduplication, and pending requests covered |
 | Task control | Complete | Live create, model change, task dispatch, completion, stop, and approval response verified | User-question response is schema- and unit-verified; the current Codex mode would not emit a live question request |
 | Lifecycle | Complete | Live rename, archive, pin, snooze, settle, history, diff, and guarded deletion verified | Three disposable build-test threads were removed and confirmed absent |
-| Agent hardening | Complete | JSON schema versioning, bounds, all-output redaction, previews, compatibility checks, a 62-test suite, and both-machine read-only smoke | Operation tests cover creation, recoverable send, task-aware wait, model, stop, requests, organization, deletion, and monitor reconnect/resume/deduplication |
-| Reliability follow-up | Complete | `make setup`, `make check`, `make smoke`, `make live-smoke`, live wait, and live run preview | Installed `t3ctl` uses the pinned dependency; transport, state, and output code are separate modules |
+| Agent hardening | Complete | JSON schema versioning, bounds, all-output redaction, previews, compatibility checks, a 68-test suite, and both-machine read-only smoke | Operation tests cover creation, recoverable send, task-aware wait, model, stop, requests, organization, deletion, and monitor reconnect/resume/deduplication |
+| Reliability follow-up | Complete | `make setup`, `make check`, `make smoke`, `make live-smoke`, resumed live follow, live wait, and live run preview | Version 0.2.1 preserves retry instructions, honors total follow deadlines, and keeps standalone state outside installed code |
 
 ## Verified limitations
 
