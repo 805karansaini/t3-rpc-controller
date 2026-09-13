@@ -210,7 +210,7 @@ Answer a pending question with a JSON object keyed by T3's question IDs, or dism
 ./t3_rpc_controller.py thread dismiss-input mac THREAD_ID REQUEST_ID
 ```
 
-Live task execution is limited to the `codex` provider and this is enforced by thread creation, model changes, and task sending. A task cannot silently continue on a non-Codex thread. The controller can still list other configured providers for read-only discovery.
+Live task execution is limited to the `codex` provider. Thread creation, model changes, task sending, approvals, and question responses all enforce that boundary, so no command can silently start or continue work through another provider. The controller can still list other configured providers for read-only discovery.
 
 Rename a thread, or move it into and out of T3's archive:
 

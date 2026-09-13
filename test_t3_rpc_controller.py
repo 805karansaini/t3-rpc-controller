@@ -467,7 +467,7 @@ class RpcProtocolTests(unittest.TestCase):
         pending = pending_requests_from_thread(thread)
         self.assertEqual([item["requestId"] for item in pending], ["q1"])
 
-    def test_failed_response_stays_pending_and_is_not_success(self):
+    def test_stale_failed_response_is_not_pending_or_success(self):
         thread = {
             "activities": [
                 {"kind": "approval.requested", "payload": {"requestId": "a1"}},
@@ -477,8 +477,10 @@ class RpcProtocolTests(unittest.TestCase):
                 },
             ]
         }
-        self.assertEqual([item["requestId"] for item in pending_requests_from_thread(thread)], ["a1"])
+        self.assertEqual(pending_requests_from_thread(thread), [])
         self.assertEqual(request_response_outcome(thread, "a1", "approval.requested"), "failed")
+        with self.assertRaisesRegex(ValueError, "not pending"):
+            require_pending_request(thread, "a1", "approval.requested")
 
     def test_live_task_provider_is_restricted_to_codex(self):
         require_codex_provider("codex")

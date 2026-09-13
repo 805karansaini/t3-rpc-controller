@@ -393,6 +393,13 @@ def pending_requests_from_thread(thread: dict) -> list[dict]:
             }
         elif kind in {"approval.resolved", "user-input.resolved"}:
             pending.pop(request_id, None)
+        elif kind in {
+            "provider.approval.respond.failed",
+            "provider.user-input.respond.failed",
+        }:
+            detail = str(payload.get("detail", "")).lower()
+            if "stale pending" in detail or "unknown pending" in detail:
+                pending.pop(request_id, None)
     return sorted(pending.values(), key=lambda item: str(item.get("createdAt", "")))
 
 
@@ -1539,6 +1546,7 @@ async def wait_for_request_cleared(
 
 async def approval_response_operation(store: EnvironmentStore, args: argparse.Namespace) -> dict:
     before = await require_thread_snapshot(store, args.environment, args.thread_id, 20)
+    require_codex_provider((before["thread"].get("modelSelection") or {}).get("instanceId", ""))
     require_pending_request(before["thread"], args.request_id, "approval.requested")
     command = build_approval_response_command(args.thread_id, args.request_id, args.decision)
     if args.dry_run:
@@ -1587,6 +1595,7 @@ async def user_input_response_operation(
     dismiss: bool,
 ) -> dict:
     before = await require_thread_snapshot(store, args.environment, args.thread_id, 20)
+    require_codex_provider((before["thread"].get("modelSelection") or {}).get("instanceId", ""))
     request = require_pending_request(before["thread"], args.request_id, "user-input.requested")
     if dismiss:
         if request.get("responseMode") != "message":

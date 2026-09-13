@@ -30,7 +30,7 @@ Credential values are never recorded here. Local connection state lives under `.
 - Read the target before a state change and read it again afterward before reporting success.
 - Keep machine-readable output stable so another agent can call the controller without scraping prose.
 - Commit after every two or three related capabilities, after tests pass.
-- Run live tasks only through the Codex provider on the Mac and i7 environments. Thread creation, model changes, and sending enforce that boundary; other providers are read-only discovery data.
+- Run live tasks only through the Codex provider on the Mac and i7 environments. Creation, model changes, sending, approvals, and question responses enforce that boundary; other providers are read-only discovery data.
 - Default new work to approval-required mode when no saved runtime choice exists.
 
 ## Progress log
@@ -43,7 +43,7 @@ Credential values are never recorded here. Local connection state lives under `.
 | Monitoring | Complete | `thread follow` plus `thread pending` | Snapshot, events, timeout, resume, deduplication, and pending requests covered |
 | Task control | Complete | Live create, model change, task dispatch, completion, stop, and approval response verified | User-question response is schema- and unit-verified; the current Codex mode would not emit a live question request |
 | Lifecycle | Complete | Live rename, archive, pin, snooze, settle, history, diff, and guarded deletion verified | Three disposable build-test threads were removed and confirmed absent |
-| Agent hardening | Complete | JSON envelopes, bounds, all-output redaction, previews, compatibility checks, a 52-test suite, and both-machine read-only smoke | Operation tests cover creation, send, model, stop, requests, organization, deletion, and monitor reconnect/resume/deduplication |
+| Agent hardening | Complete | JSON envelopes, bounds, all-output redaction, previews, compatibility checks, a 53-test suite, and both-machine read-only smoke | Operation tests cover creation, send, model, stop, requests, organization, deletion, and monitor reconnect/resume/deduplication |
 
 ## Verified limitations
 

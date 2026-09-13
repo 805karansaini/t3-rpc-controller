@@ -223,6 +223,7 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
     async def test_approval_operation_requires_resolution_event(self):
         pending = {
             "id": "t1",
+            "modelSelection": {"instanceId": "codex", "model": "gpt-test"},
             "activities": [{"kind": "approval.requested", "payload": {"requestId": "a1"}}],
         }
         resolved = {
@@ -262,6 +263,7 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
     async def test_user_input_operation_requires_resolution_event(self):
         pending = {
             "id": "t1",
+            "modelSelection": {"instanceId": "codex", "model": "gpt-test"},
             "activities": [
                 {
                     "kind": "user-input.requested",
@@ -298,6 +300,37 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(result["answeredQuestionIds"], ["color"])
         self.assertEqual(wait.await_args.args[4], "user-input.requested")
+
+    async def test_approval_and_input_refuse_non_codex_threads(self):
+        approval_args = args(
+            environment="mac",
+            thread_id="t1",
+            request_id="a1",
+            decision="accept",
+            dry_run=False,
+        )
+        non_codex = {
+            "id": "t1",
+            "modelSelection": {"instanceId": "opencode", "model": "model"},
+            "activities": [{"kind": "approval.requested", "payload": {"requestId": "a1"}}],
+        }
+        with patch(
+            "t3_rpc_controller.require_thread_snapshot",
+            new=AsyncMock(return_value={"thread": non_codex}),
+        ):
+            with self.assertRaisesRegex(ValueError, "restricted to provider instance codex"):
+                await approval_response_operation(object(), approval_args)
+
+        input_args = args(environment="mac", thread_id="t1", request_id="q1", dry_run=False)
+        non_codex["activities"] = [
+            {"kind": "user-input.requested", "payload": {"requestId": "q1"}}
+        ]
+        with patch(
+            "t3_rpc_controller.require_thread_snapshot",
+            new=AsyncMock(return_value={"thread": non_codex}),
+        ):
+            with self.assertRaisesRegex(ValueError, "restricted to provider instance codex"):
+                await user_input_response_operation(object(), input_args, {"q": "a"}, False)
 
     async def test_model_rename_and_archive_read_back_their_exact_state(self):
         model_args = args(
