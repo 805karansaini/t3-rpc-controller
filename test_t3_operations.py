@@ -185,7 +185,10 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
             "interactionMode": None,
             "messages": [],
         }
-        confirmed = {**thread, "messages": [{"id": "message-1"}]}
+        confirmed = {
+            **thread,
+            "messages": [{"id": "message-1", "role": "user", "text": "Do work"}],
+        }
         command_args = args(
             environment="mac",
             thread_id="t1",
@@ -218,6 +221,111 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaisesRegex(ValueError, "restricted to provider instance codex"):
                 await send_thread_operation(object(), command_args, "Do work")
+
+    async def test_send_reconciles_an_uncertain_dispatch_and_safe_retry(self):
+        command_id = "11111111-1111-4111-8111-111111111111"
+        message_id = "22222222-2222-4222-8222-222222222222"
+        before = {
+            "id": "t1",
+            "modelSelection": {"instanceId": "codex", "model": "gpt-test"},
+            "runtimeMode": "approval-required",
+            "interactionMode": "default",
+            "messages": [],
+        }
+        confirmed = {
+            **before,
+            "messages": [{"id": message_id, "role": "user", "text": "Do work"}],
+        }
+        command_args = args(
+            environment="mac",
+            thread_id="t1",
+            provider=None,
+            model=None,
+            runtime_mode=None,
+            interaction_mode=None,
+            command_id=command_id,
+            message_id=message_id,
+            dry_run=False,
+        )
+        with (
+            patch(
+                "t3_rpc_controller.require_thread_snapshot",
+                new=AsyncMock(side_effect=[{"thread": before}, {"thread": confirmed}]),
+            ),
+            patch(
+                "t3_rpc_controller.dispatch_command",
+                new=AsyncMock(side_effect=OSError("connection dropped after send")),
+            ),
+        ):
+            result = await send_thread_operation(object(), command_args, "Do work")
+        self.assertTrue(result["reconciled"])
+        self.assertIsNone(result["receipt"])
+        self.assertEqual(result["messageId"], message_id)
+
+        with (
+            patch(
+                "t3_rpc_controller.require_thread_snapshot",
+                new=AsyncMock(return_value={"thread": confirmed}),
+            ),
+            patch("t3_rpc_controller.dispatch_command", new=AsyncMock()) as dispatch,
+        ):
+            retried = await send_thread_operation(object(), command_args, "Do work")
+        self.assertTrue(retried["reconciled"])
+        dispatch.assert_not_awaited()
+
+        mismatched = {
+            **confirmed,
+            "messages": [{"id": message_id, "role": "user", "text": "Different work"}],
+        }
+        with patch(
+            "t3_rpc_controller.require_thread_snapshot",
+            new=AsyncMock(return_value={"thread": mismatched}),
+        ):
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                await send_thread_operation(object(), command_args, "Do work")
+
+    async def test_create_reconciles_an_uncertain_dispatch(self):
+        thread_id = "33333333-3333-4333-8333-333333333333"
+        command_id = "44444444-4444-4444-8444-444444444444"
+        command_args = args(
+            environment="mac",
+            project_id="p1",
+            title="Task",
+            provider="codex",
+            model="gpt-test",
+            runtime_mode="approval-required",
+            interaction_mode="default",
+            branch=None,
+            worktree_path=None,
+            thread_id=thread_id,
+            command_id=command_id,
+            dry_run=False,
+        )
+        exact = {
+            "id": thread_id,
+            "projectId": "p1",
+            "title": "Task",
+            "modelSelection": {"instanceId": "codex", "model": "gpt-test"},
+            "runtimeMode": "approval-required",
+            "interactionMode": "default",
+            "branch": None,
+            "worktreePath": None,
+        }
+        with (
+            patch("t3_rpc_controller.validate_project_and_model", new=AsyncMock()),
+            patch("t3_rpc_controller.find_any_shell_thread", new=AsyncMock(return_value=None)),
+            patch(
+                "t3_rpc_controller.dispatch_command",
+                new=AsyncMock(side_effect=OSError("connection dropped after create")),
+            ),
+            patch(
+                "t3_rpc_controller.wait_for_shell_thread",
+                new=AsyncMock(return_value=exact),
+            ),
+        ):
+            result = await create_thread_operation(object(), command_args)
+        self.assertTrue(result["reconciled"])
+        self.assertEqual(result["thread"]["id"], thread_id)
 
     async def test_session_stop_requires_confirmed_terminal_session(self):
         thread = {"id": "t1", "latestTurn": {"state": "completed"}, "session": {"status": "ready"}}

@@ -42,6 +42,7 @@ from t3_rpc_controller import (
     is_terminal_thread_event,
     is_terminal_thread_snapshot,
     thread_snapshot_summary,
+    validate_uuid,
     model_selection,
     pending_requests_from_thread,
     request_response_outcome,
@@ -362,6 +363,12 @@ class RpcProtocolTests(unittest.TestCase):
         self.assertEqual(command["type"], "thread.create")
         self.assertEqual(command["modelSelection"], {"instanceId": "codex_work", "model": "gpt-test"})
         self.assertEqual(command["projectId"], "p1")
+
+    def test_retry_identifiers_require_canonical_uuids(self):
+        value = "11111111-1111-4111-8111-111111111111"
+        self.assertEqual(validate_uuid(value, "--command-id"), value)
+        with self.assertRaisesRegex(ValueError, "must be a UUID"):
+            validate_uuid("not-a-uuid", "--command-id")
 
     def test_builds_turn_start_without_echoing_requirements_into_output_helpers(self):
         command = build_turn_start_command(

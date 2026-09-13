@@ -263,6 +263,18 @@ def model_selection(instance_id: str, model: str) -> dict:
     return {"instanceId": instance_id, "model": model}
 
 
+def validate_uuid(value: str | None, option: str) -> str | None:
+    if value is None:
+        return None
+    try:
+        parsed = uuid.UUID(value)
+    except ValueError as error:
+        raise ValueError(f"{option} must be a UUID") from error
+    if str(parsed) != value.lower():
+        raise ValueError(f"{option} must use canonical UUID form")
+    return value.lower()
+
+
 def build_thread_create_command(
     *,
     thread_id: str,
@@ -273,10 +285,11 @@ def build_thread_create_command(
     interaction_mode: str,
     branch: str | None,
     worktree_path: str | None,
+    command_id: str | None = None,
 ) -> dict:
     return {
         "type": "thread.create",
-        "commandId": str(uuid.uuid4()),
+        "commandId": command_id or str(uuid.uuid4()),
         "threadId": thread_id,
         "projectId": project_id,
         "title": title,
@@ -296,13 +309,15 @@ def build_turn_start_command(
     runtime_mode: str,
     interaction_mode: str,
     selection: dict | None = None,
+    command_id: str | None = None,
+    message_id: str | None = None,
 ) -> dict:
     command = {
         "type": "thread.turn.start",
-        "commandId": str(uuid.uuid4()),
+        "commandId": command_id or str(uuid.uuid4()),
         "threadId": thread_id,
         "message": {
-            "messageId": str(uuid.uuid4()),
+            "messageId": message_id or str(uuid.uuid4()),
             "role": "user",
             "text": text,
             "attachments": [],
@@ -1214,6 +1229,48 @@ async def require_thread_snapshot(
     return snapshot
 
 
+def thread_matches_create_command(thread: dict, command: dict) -> bool:
+    return (
+        thread.get("projectId") == command["projectId"]
+        and thread.get("title") == command["title"]
+        and thread.get("modelSelection") == command["modelSelection"]
+        and thread.get("runtimeMode") == command["runtimeMode"]
+        and thread.get("interactionMode") == command["interactionMode"]
+        and thread.get("branch") == command["branch"]
+        and thread.get("worktreePath") == command["worktreePath"]
+    )
+
+
+async def wait_for_thread_message(
+    store: EnvironmentStore,
+    environment: str,
+    thread_id: str,
+    message_id: str,
+    text: str,
+    timeout: float = 10,
+) -> dict:
+    deadline = time.monotonic() + timeout
+    while True:
+        snapshot = await require_thread_snapshot(store, environment, thread_id, 20)
+        message = next(
+            (
+                message
+                for message in snapshot["thread"].get("messages", [])
+                if message.get("id") == message_id
+            ),
+            None,
+        )
+        if message is not None:
+            if message.get("role") != "user" or message.get("text") != text:
+                raise ValueError(
+                    f"message {message_id} already exists but does not match the submitted task"
+                )
+            return snapshot
+        if time.monotonic() >= deadline:
+            raise RuntimeError("T3 did not confirm the submitted user message")
+        await asyncio.sleep(0.2)
+
+
 async def create_thread_operation(store: EnvironmentStore, args: argparse.Namespace) -> dict:
     await validate_project_and_model(
         store,
@@ -1222,7 +1279,9 @@ async def create_thread_operation(store: EnvironmentStore, args: argparse.Namesp
         args.provider,
         args.model,
     )
-    thread_id = str(uuid.uuid4())
+    supplied_thread_id = validate_uuid(getattr(args, "thread_id", None), "--thread-id")
+    command_id = validate_uuid(getattr(args, "command_id", None), "--command-id")
+    thread_id = supplied_thread_id or str(uuid.uuid4())
     command = build_thread_create_command(
         thread_id=thread_id,
         project_id=args.project_id,
@@ -1232,29 +1291,51 @@ async def create_thread_operation(store: EnvironmentStore, args: argparse.Namesp
         interaction_mode=args.interaction_mode,
         branch=args.branch,
         worktree_path=args.worktree_path,
+        command_id=command_id,
     )
+    if supplied_thread_id:
+        existing = await find_any_shell_thread(store, args.environment, thread_id)
+        if existing is not None:
+            if not thread_matches_create_command(existing, command):
+                raise ValueError(
+                    f"thread {thread_id} already exists but does not match the requested configuration"
+                )
+            return {
+                "ok": True,
+                "operation": "thread.create",
+                "commandId": command["commandId"],
+                "receipt": None,
+                "reconciled": True,
+                "thread": thread_row(existing, args.environment),
+            }
     if args.dry_run:
         return dry_run_result(args.environment, command)
-    receipt = await dispatch_command(store, args.environment, command)
-    confirmed = await wait_for_shell_thread(
-        store,
-        args.environment,
-        thread_id,
-        lambda thread: (
-            thread.get("projectId") == command["projectId"]
-            and thread.get("title") == command["title"]
-            and thread.get("modelSelection") == command["modelSelection"]
-            and thread.get("runtimeMode") == command["runtimeMode"]
-            and thread.get("interactionMode") == command["interactionMode"]
-            and thread.get("branch") == command["branch"]
-            and thread.get("worktreePath") == command["worktreePath"]
-        ),
-    )
+    dispatch_error = None
+    try:
+        receipt = await dispatch_command(store, args.environment, command)
+    except Exception as error:
+        dispatch_error = error
+        receipt = None
+    try:
+        confirmed = await wait_for_shell_thread(
+            store,
+            args.environment,
+            thread_id,
+            lambda thread: thread_matches_create_command(thread, command),
+        )
+    except Exception as confirmation_error:
+        if dispatch_error is not None:
+            raise RuntimeError(
+                f"T3 thread creation result is unknown; retry with --thread-id {thread_id} "
+                f"and --command-id {command['commandId']}"
+            ) from dispatch_error
+        raise confirmation_error
     return {
         "ok": True,
         "operation": "thread.create",
         "commandId": command["commandId"],
         "receipt": receipt,
+        "reconciled": dispatch_error is not None,
         "thread": thread_row(confirmed, args.environment),
     }
 
@@ -1276,7 +1357,7 @@ def read_prompt(message: str | None, prompt_file: str | None) -> str:
 
 
 async def send_thread_operation(store: EnvironmentStore, args: argparse.Namespace, text: str) -> dict:
-    before = await require_thread_snapshot(store, args.environment, args.thread_id)
+    before = await require_thread_snapshot(store, args.environment, args.thread_id, 20)
     thread = before["thread"]
     current_selection = thread.get("modelSelection") or {}
     require_codex_provider(args.provider or current_selection.get("instanceId", ""))
@@ -1292,35 +1373,66 @@ async def send_thread_operation(store: EnvironmentStore, args: argparse.Namespac
         ):
             raise ValueError(f"provider {args.provider} requires a new thread to change models")
         selection = model_selection(args.provider, args.model)
+    command_id = validate_uuid(getattr(args, "command_id", None), "--command-id")
+    supplied_message_id = validate_uuid(getattr(args, "message_id", None), "--message-id")
     command = build_turn_start_command(
         thread_id=args.thread_id,
         text=text,
         runtime_mode=args.runtime_mode or thread.get("runtimeMode") or "approval-required",
         interaction_mode=args.interaction_mode or thread.get("interactionMode") or "default",
         selection=selection,
+        command_id=command_id,
+        message_id=supplied_message_id,
     )
+    message_id = command["message"]["messageId"]
+    existing_message = next(
+        (message for message in thread.get("messages", []) if message.get("id") == message_id),
+        None,
+    )
+    if supplied_message_id and existing_message is not None:
+        if existing_message.get("role") != "user" or existing_message.get("text") != text:
+            raise ValueError(
+                f"message {message_id} already exists but does not match the submitted task"
+            )
+        return {
+            "ok": True,
+            "operation": "thread.turn.start",
+            "commandId": command["commandId"],
+            "messageId": message_id,
+            "receipt": None,
+            "reconciled": True,
+            "thread": thread_row(thread, args.environment),
+        }
     if args.dry_run:
         return dry_run_result(args.environment, command)
-    receipt = await dispatch_command(store, args.environment, command)
-    message_id = command["message"]["messageId"]
-
-    async def message_was_recorded() -> dict:
-        deadline = time.monotonic() + 10
-        while True:
-            snapshot = await require_thread_snapshot(store, args.environment, args.thread_id)
-            if any(message.get("id") == message_id for message in snapshot["thread"].get("messages", [])):
-                return snapshot
-            if time.monotonic() >= deadline:
-                raise RuntimeError("T3 accepted the task but did not confirm its user message")
-            await asyncio.sleep(0.2)
-
-    confirmed = await message_was_recorded()
+    dispatch_error = None
+    try:
+        receipt = await dispatch_command(store, args.environment, command)
+    except Exception as error:
+        dispatch_error = error
+        receipt = None
+    try:
+        confirmed = await wait_for_thread_message(
+            store,
+            args.environment,
+            args.thread_id,
+            message_id,
+            text,
+        )
+    except Exception as confirmation_error:
+        if dispatch_error is not None:
+            raise RuntimeError(
+                f"T3 task submission result is unknown; retry with --message-id {message_id} "
+                f"and --command-id {command['commandId']}"
+            ) from dispatch_error
+        raise confirmation_error
     return {
         "ok": True,
         "operation": "thread.turn.start",
         "commandId": command["commandId"],
         "messageId": message_id,
         "receipt": receipt,
+        "reconciled": dispatch_error is not None,
         "thread": thread_row(confirmed["thread"], args.environment),
     }
 
@@ -2174,6 +2286,14 @@ def build_parser() -> argparse.ArgumentParser:
     thread_create.add_argument("--interaction-mode", choices=["default", "plan"], default="default")
     thread_create.add_argument("--branch")
     thread_create.add_argument("--worktree-path")
+    thread_create.add_argument(
+        "--thread-id",
+        help="reuse this UUID to reconcile an uncertain earlier creation",
+    )
+    thread_create.add_argument(
+        "--command-id",
+        help="reuse this UUID with --thread-id after an uncertain earlier creation",
+    )
     add_dry_run(thread_create)
     thread_create.set_defaults(handler=thread_create_command)
 
@@ -2189,6 +2309,14 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["approval-required", "auto-accept-edits", "auto", "full-access"],
     )
     thread_send.add_argument("--interaction-mode", choices=["default", "plan"])
+    thread_send.add_argument(
+        "--message-id",
+        help="reuse this UUID to reconcile an uncertain earlier submission",
+    )
+    thread_send.add_argument(
+        "--command-id",
+        help="reuse this UUID with --message-id after an uncertain earlier submission",
+    )
     add_dry_run(thread_send)
     thread_send.set_defaults(handler=thread_send_command)
 

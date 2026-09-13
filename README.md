@@ -161,6 +161,16 @@ Create a thread with explicit machine, project, provider, model, and safety mode
   --interaction-mode default
 ```
 
+For a creation that may need to be retried after a connection failure, generate UUIDs once and reuse them:
+
+```bash
+./t3_rpc_controller.py thread create mac PROJECT_ID \
+  --title "Task title" --provider codex --model gpt-6-astra \
+  --thread-id THREAD_UUID --command-id COMMAND_UUID
+```
+
+If that thread already exists with the exact requested settings, the controller returns it with `reconciled: true` instead of creating another one. A conflicting thread ID fails without changing anything.
+
 Send a task. The result confirms the message ID and current thread state without repeating the prompt:
 
 ```bash
@@ -168,6 +178,15 @@ Send a task. The result confirms the message ID and current thread state without
 ./t3_rpc_controller.py thread send mac THREAD_ID --prompt-file /path/to/prompt.md
 printf '%s' "Task text" | ./t3_rpc_controller.py thread send mac THREAD_ID --prompt-file -
 ```
+
+For a submission that may need to be retried, reuse one message UUID and command UUID:
+
+```bash
+./t3_rpc_controller.py thread send mac THREAD_ID "Task text" \
+  --message-id MESSAGE_UUID --command-id COMMAND_UUID
+```
+
+The controller reads the thread after an uncertain dispatch. If the exact user message is present, it reports `reconciled: true`. Repeating the command with the same identifiers returns the existing message rather than submitting it again. Reusing a message ID with different text is rejected.
 
 Change the provider and model for an existing thread:
 
