@@ -113,6 +113,16 @@ Read the latest turns and detailed state for one exact thread:
 ./t3_rpc_controller.py thread show mac THREAD_ID --turn-limit 20
 ```
 
+Follow one thread as newline-delimited JSON. The first line summarizes the snapshot without repeating message contents, subsequent lines are ordered T3 events, and the final line explains why following stopped:
+
+```bash
+./t3_rpc_controller.py thread follow mac THREAD_ID --timeout 60
+./t3_rpc_controller.py thread follow mac THREAD_ID --until-terminal --timeout 600
+./t3_rpc_controller.py thread follow mac THREAD_ID --after-sequence SEQUENCE
+```
+
+Use `--timeout 0` to wait indefinitely. The follower reconnects after a dropped connection, resumes from the last event sequence, and suppresses duplicate events.
+
 Search user and assistant messages across one or every machine:
 
 ```bash

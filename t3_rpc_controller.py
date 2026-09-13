@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -122,6 +123,31 @@ def first_stream_snapshot(messages: list[dict], request_id: str) -> dict | None:
                 if isinstance(snapshot, dict):
                     return snapshot
     return None
+
+
+def thread_snapshot_summary(snapshot: dict, environment: str) -> dict:
+    thread = snapshot.get("thread", {})
+    return {
+        "kind": "snapshot",
+        "environment": environment,
+        "snapshotSequence": snapshot.get("snapshotSequence"),
+        "page": snapshot.get("page"),
+        "thread": thread_row(thread, environment),
+        "messageCount": len(thread.get("messages", [])),
+        "activityCount": len(thread.get("activities", [])),
+        "checkpointCount": len(thread.get("checkpoints", [])),
+        "proposedPlanCount": len(thread.get("proposedPlans", [])),
+    }
+
+
+def is_terminal_thread_event(item: dict) -> bool:
+    if item.get("kind") != "event":
+        return False
+    event = item.get("event", {})
+    if event.get("type") != "thread.session-set":
+        return False
+    status = (event.get("payload", {}).get("session") or {}).get("status")
+    return status in {"ready", "stopped", "interrupted", "error"}
 
 
 def thread_row(thread: dict, environment: str) -> dict:
@@ -377,6 +403,160 @@ async def fetch_thread_snapshot(
                 if exit_value.get("_tag") != "Success":
                     raise RuntimeError(f"T3 RPC failed: {json.dumps(exit_value)}")
                 raise RuntimeError("T3 RPC stream ended before returning a thread snapshot")
+
+
+async def follow_thread(
+    store: EnvironmentStore,
+    environment: str,
+    thread_id: str,
+    *,
+    after_sequence: int | None,
+    timeout: float,
+    max_events: int | None,
+    retries: int,
+    until_terminal: bool,
+    turn_limit: int,
+) -> dict:
+    http_url, token = store.load(environment)
+    deadline = None if timeout == 0 else time.monotonic() + timeout
+    last_sequence = after_sequence
+    emitted_event_ids: set[str] = set()
+    emitted_events = 0
+    synchronized = False
+    reconnects = 0
+
+    while True:
+        if deadline is not None and time.monotonic() >= deadline:
+            return {
+                "kind": "follow-complete",
+                "reason": "timeout",
+                "environment": environment,
+                "threadId": thread_id,
+                "lastSequence": last_sequence,
+                "events": emitted_events,
+                "reconnects": reconnects,
+            }
+        try:
+            ticket_result = await asyncio.to_thread(
+                http_json,
+                f"{http_url}/api/auth/websocket-ticket",
+                token,
+                "POST",
+            )
+            ticket = ticket_result.get("ticket")
+            if not isinstance(ticket, str) or not ticket:
+                raise RuntimeError("T3 did not return a WebSocket ticket")
+            request_id = f"t3-follow-{uuid.uuid4()}"
+            payload: dict[str, object] = {
+                "threadId": thread_id,
+                "requestCompletionMarker": True,
+                "turnLimit": turn_limit,
+            }
+            if last_sequence is not None:
+                payload["afterSequence"] = last_sequence
+            async with websockets.connect(websocket_url(http_url, ticket), open_timeout=15) as socket:
+                await socket.send(json.dumps({"_tag": "Ping"}))
+                await socket.send(
+                    json.dumps(make_request(request_id, "orchestration.subscribeThread", payload))
+                )
+                while True:
+                    remaining = None if deadline is None else max(0.001, deadline - time.monotonic())
+                    raw_message = await asyncio.wait_for(socket.recv(), timeout=remaining)
+                    message = json.loads(raw_message)
+                    if message.get("_tag") == "Exit" and message.get("requestId") == request_id:
+                        exit_value = message.get("exit", {})
+                        if exit_value.get("_tag") == "Success":
+                            return {
+                                "kind": "follow-complete",
+                                "reason": "stream-ended",
+                                "environment": environment,
+                                "threadId": thread_id,
+                                "lastSequence": last_sequence,
+                                "events": emitted_events,
+                                "reconnects": reconnects,
+                            }
+                        raise RuntimeError(
+                            f"T3 thread subscription failed: {json.dumps(exit_value)}"
+                        )
+                    if message.get("_tag") != "Chunk" or message.get("requestId") != request_id:
+                        continue
+                    for item in message.get("values", []):
+                        if not isinstance(item, dict):
+                            continue
+                        if item.get("kind") == "snapshot" and isinstance(item.get("snapshot"), dict):
+                            synchronized = True
+                            print(
+                                json.dumps(thread_snapshot_summary(item["snapshot"], environment)),
+                                flush=True,
+                            )
+                            continue
+                        if item.get("kind") == "synchronized":
+                            synchronized = True
+                            print(
+                                json.dumps(
+                                    {
+                                        "kind": "synchronized",
+                                        "environment": environment,
+                                        "threadId": thread_id,
+                                        "lastSequence": last_sequence,
+                                    }
+                                ),
+                                flush=True,
+                            )
+                            continue
+                        if item.get("kind") != "event" or not isinstance(item.get("event"), dict):
+                            continue
+                        event = item["event"]
+                        event_id = event.get("eventId")
+                        sequence = event.get("sequence")
+                        if isinstance(event_id, str) and event_id in emitted_event_ids:
+                            continue
+                        if isinstance(sequence, int) and last_sequence is not None and sequence <= last_sequence:
+                            continue
+                        if isinstance(event_id, str):
+                            emitted_event_ids.add(event_id)
+                        if isinstance(sequence, int):
+                            last_sequence = sequence
+                        emitted_events += 1
+                        output_item = {"environment": environment, "threadId": thread_id, **item}
+                        print(json.dumps(output_item), flush=True)
+                        if max_events is not None and emitted_events >= max_events:
+                            return {
+                                "kind": "follow-complete",
+                                "reason": "max-events",
+                                "environment": environment,
+                                "threadId": thread_id,
+                                "lastSequence": last_sequence,
+                                "events": emitted_events,
+                                "reconnects": reconnects,
+                            }
+                        if until_terminal and synchronized and is_terminal_thread_event(item):
+                            return {
+                                "kind": "follow-complete",
+                                "reason": "terminal-state",
+                                "environment": environment,
+                                "threadId": thread_id,
+                                "lastSequence": last_sequence,
+                                "events": emitted_events,
+                                "reconnects": reconnects,
+                            }
+        except asyncio.TimeoutError:
+            return {
+                "kind": "follow-complete",
+                "reason": "timeout",
+                "environment": environment,
+                "threadId": thread_id,
+                "lastSequence": last_sequence,
+                "events": emitted_events,
+                "reconnects": reconnects,
+            }
+        except (OSError, websockets.ConnectionClosed) as error:
+            if reconnects >= retries:
+                raise RuntimeError(
+                    f"T3 thread subscription disconnected after {reconnects} reconnects: {error}"
+                ) from error
+            reconnects += 1
+            await asyncio.sleep(min(2**reconnects, 5))
 
 
 async def fetch_archived_shell_snapshot(http_url: str, token: str) -> dict:
@@ -652,6 +832,24 @@ def thread_show_command(store: EnvironmentStore, args: argparse.Namespace) -> in
     return 0
 
 
+def thread_follow_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
+    result = asyncio.run(
+        follow_thread(
+            store,
+            args.environment,
+            args.thread_id,
+            after_sequence=args.after_sequence,
+            timeout=args.timeout,
+            max_events=args.max_events,
+            retries=args.retries,
+            until_terminal=args.until_terminal,
+            turn_limit=args.turn_limit,
+        )
+    )
+    print(json.dumps(result), flush=True)
+    return 0
+
+
 def search_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
     names = store.names() if not args.environment or args.environment == ["all"] else args.environment
     if not names:
@@ -758,6 +956,17 @@ def build_parser() -> argparse.ArgumentParser:
     thread_show.add_argument("thread_id")
     thread_show.add_argument("--turn-limit", type=int, default=20)
     thread_show.set_defaults(handler=thread_show_command)
+
+    thread_follow = thread_commands.add_parser("follow", help="stream ordered thread updates as JSON Lines")
+    thread_follow.add_argument("environment")
+    thread_follow.add_argument("thread_id")
+    thread_follow.add_argument("--after-sequence", type=int)
+    thread_follow.add_argument("--timeout", type=float, default=60)
+    thread_follow.add_argument("--max-events", type=int)
+    thread_follow.add_argument("--retries", type=int, default=3)
+    thread_follow.add_argument("--until-terminal", action="store_true")
+    thread_follow.add_argument("--turn-limit", type=int, default=20)
+    thread_follow.set_defaults(handler=thread_follow_command)
 
     search = subparsers.add_parser("search", help="search user and assistant thread messages")
     search.add_argument("query")

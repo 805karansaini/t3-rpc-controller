@@ -23,6 +23,8 @@ from t3_rpc_controller import (
     read_pairing_credential,
     safe_environment_config,
     safe_model_row,
+    is_terminal_thread_event,
+    thread_snapshot_summary,
     list_many_projects,
 )
 
@@ -240,6 +242,47 @@ class RpcProtocolTests(unittest.TestCase):
         self.assertEqual(row["slug"], "gpt-test")
         self.assertTrue(row["isDefault"])
         self.assertEqual(row["capabilities"], {"optionDescriptors": []})
+
+    def test_thread_snapshot_summary_does_not_repeat_message_contents(self):
+        summary = thread_snapshot_summary(
+            {
+                "snapshotSequence": 42,
+                "thread": {
+                    "id": "t1",
+                    "messages": [{"text": "private prompt"}],
+                    "activities": [],
+                    "checkpoints": [],
+                    "proposedPlans": [],
+                },
+            },
+            "mac",
+        )
+        self.assertEqual(summary["messageCount"], 1)
+        self.assertNotIn("messages", summary["thread"])
+
+    def test_terminal_event_requires_a_settled_session_status(self):
+        self.assertTrue(
+            is_terminal_thread_event(
+                {
+                    "kind": "event",
+                    "event": {
+                        "type": "thread.session-set",
+                        "payload": {"session": {"status": "ready"}},
+                    },
+                }
+            )
+        )
+        self.assertFalse(
+            is_terminal_thread_event(
+                {
+                    "kind": "event",
+                    "event": {
+                        "type": "thread.session-set",
+                        "payload": {"session": {"status": "running"}},
+                    },
+                }
+            )
+        )
 
 
 class MultiEnvironmentTests(unittest.IsolatedAsyncioTestCase):

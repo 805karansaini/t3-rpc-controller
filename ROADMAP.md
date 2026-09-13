@@ -34,10 +34,10 @@ The work is complete when an agent can use documented commands to identify a mac
 
 ### 3. Add live updates
 
-- [ ] Subscribe to one thread and print its initial state.
-- [ ] Follow ordered thread events as JSON Lines for another agent to consume.
-- [ ] Stop following after a terminal state or caller-supplied timeout.
-- [ ] Reconnect safely and avoid emitting duplicate events.
+- [x] Subscribe to one thread and print its initial state.
+- [x] Follow ordered thread events as JSON Lines for another agent to consume.
+- [x] Stop following after a terminal state or caller-supplied timeout.
+- [x] Reconnect safely and avoid emitting duplicate events.
 - [ ] Report pending approvals and user-input requests prominently.
 
 ### 4. Create and run work
