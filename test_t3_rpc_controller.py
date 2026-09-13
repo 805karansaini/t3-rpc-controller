@@ -12,7 +12,9 @@ from t3_rpc_controller import (
     bearer_token_from_bootstrap,
     bearer_token_from_oauth,
     build_thread_create_command,
+    build_thread_lifecycle_command,
     build_thread_model_command,
+    build_thread_rename_command,
     build_thread_stop_command,
     build_turn_start_command,
     build_approval_response_command,
@@ -343,6 +345,14 @@ class RpcProtocolTests(unittest.TestCase):
             prompt = Path(directory) / "prompt.txt"
             prompt.write_text("Task from file")
             self.assertEqual(read_prompt(None, str(prompt)), "Task from file")
+
+    def test_builds_rename_and_archive_commands(self):
+        rename = build_thread_rename_command("t1", "New title")
+        self.assertEqual(rename["type"], "thread.meta.update")
+        self.assertEqual(rename["title"], "New title")
+        archive = build_thread_lifecycle_command("t1", "archive")
+        self.assertEqual(archive["type"], "thread.archive")
+        self.assertEqual(archive["threadId"], "t1")
 
     def test_builds_turn_interrupt_and_session_stop_commands(self):
         interrupt = build_thread_stop_command("t1", "turn-1", False)

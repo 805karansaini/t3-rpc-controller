@@ -205,6 +205,16 @@ Answer a pending question with a JSON object keyed by T3's question IDs, or dism
 
 Live task execution is intentionally limited to the `codex` provider. The controller can still discover other configured providers, but its live task examples and verification use only Codex on the Mac and i7 environments.
 
+Rename a thread, or move it into and out of T3's archive:
+
+```bash
+./t3_rpc_controller.py thread rename mac THREAD_ID "New title"
+./t3_rpc_controller.py thread archive mac THREAD_ID
+./t3_rpc_controller.py thread unarchive mac THREAD_ID
+```
+
+Each command refuses an incompatible current state and confirms the new title or archive location before returning success.
+
 Run tests:
 
 ```bash

@@ -57,8 +57,8 @@ The work is complete when an agent can use documented commands to identify a mac
 
 ### 6. Manage thread lifecycle
 
-- [ ] Rename a thread and verify the new title.
-- [ ] Archive and unarchive a thread.
+- [x] Rename a thread and verify the new title.
+- [x] Archive and unarchive a thread.
 - [ ] Pin, unpin, snooze, and unsnooze where supported.
 - [ ] Delete a thread only with an explicit destructive flag and exact identity check.
 - [ ] Add read-only diff and history retrieval where supported.

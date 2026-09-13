@@ -233,6 +233,24 @@ def build_thread_model_command(thread_id: str, selection: dict) -> dict:
     }
 
 
+def build_thread_rename_command(thread_id: str, title: str) -> dict:
+    return {
+        "type": "thread.meta.update",
+        "commandId": str(uuid.uuid4()),
+        "threadId": thread_id,
+        "title": title,
+    }
+
+
+def build_thread_lifecycle_command(thread_id: str, action: str, **fields: object) -> dict:
+    return {
+        "type": f"thread.{action}",
+        "commandId": str(uuid.uuid4()),
+        "threadId": thread_id,
+        **fields,
+    }
+
+
 def build_thread_stop_command(thread_id: str, turn_id: str | None, stop_session: bool) -> dict:
     command = {
         "type": "thread.session.stop" if stop_session else "thread.turn.interrupt",
@@ -962,6 +980,21 @@ async def wait_for_shell_thread(
         await asyncio.sleep(0.2)
 
 
+async def find_shell_thread(
+    store: EnvironmentStore,
+    environment: str,
+    thread_id: str,
+    archived: bool,
+) -> dict | None:
+    url, token = store.load(environment)
+    snapshot = (
+        await fetch_archived_shell_snapshot(url, token)
+        if archived
+        else await fetch_shell_snapshot(url, token)
+    )
+    return next((item for item in snapshot.get("threads", []) if item.get("id") == thread_id), None)
+
+
 async def require_thread_snapshot(
     store: EnvironmentStore,
     environment: str,
@@ -1090,6 +1123,62 @@ async def set_thread_model_operation(store: EnvironmentStore, args: argparse.Nam
     return {
         "ok": True,
         "operation": "thread.meta.update",
+        "commandId": command["commandId"],
+        "receipt": receipt,
+        "thread": thread_row(confirmed, args.environment),
+    }
+
+
+async def rename_thread_operation(store: EnvironmentStore, args: argparse.Namespace) -> dict:
+    await require_thread_snapshot(store, args.environment, args.thread_id)
+    title = args.title.strip()
+    if not title:
+        raise ValueError("thread title cannot be empty")
+    command = build_thread_rename_command(args.thread_id, title)
+    receipt = await dispatch_command(store, args.environment, command)
+    confirmed = await wait_for_shell_thread(
+        store,
+        args.environment,
+        args.thread_id,
+        lambda thread: thread.get("title") == title,
+    )
+    return {
+        "ok": True,
+        "operation": command["type"],
+        "commandId": command["commandId"],
+        "receipt": receipt,
+        "thread": thread_row(confirmed, args.environment),
+    }
+
+
+async def archive_thread_operation(
+    store: EnvironmentStore,
+    args: argparse.Namespace,
+    archive: bool,
+) -> dict:
+    before = await find_shell_thread(store, args.environment, args.thread_id, archived=not archive)
+    if before is None:
+        opposite = await find_shell_thread(store, args.environment, args.thread_id, archived=archive)
+        if opposite is not None:
+            state = "already archived" if archive else "not archived"
+            raise ValueError(f"thread {args.thread_id} is {state}")
+        raise ValueError(f"thread {args.thread_id} does not exist in environment {args.environment}")
+    command = build_thread_lifecycle_command(
+        args.thread_id,
+        "archive" if archive else "unarchive",
+    )
+    receipt = await dispatch_command(store, args.environment, command)
+    deadline = time.monotonic() + 10
+    while True:
+        confirmed = await find_shell_thread(store, args.environment, args.thread_id, archived=archive)
+        if confirmed is not None:
+            break
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"T3 did not confirm archive state for thread {args.thread_id}")
+        await asyncio.sleep(0.2)
+    return {
+        "ok": True,
+        "operation": command["type"],
         "commandId": command["commandId"],
         "receipt": receipt,
         "thread": thread_row(confirmed, args.environment),
@@ -1400,6 +1489,24 @@ def thread_model_command(store: EnvironmentStore, args: argparse.Namespace) -> i
     return 0
 
 
+def thread_rename_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
+    result = asyncio.run(rename_thread_operation(store, args))
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def thread_archive_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
+    result = asyncio.run(archive_thread_operation(store, args, True))
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def thread_unarchive_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
+    result = asyncio.run(archive_thread_operation(store, args, False))
+    print(json.dumps(result, indent=2))
+    return 0
+
+
 def thread_pending_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
     snapshot = asyncio.run(
         require_thread_snapshot(store, args.environment, args.thread_id, args.turn_limit)
@@ -1599,6 +1706,22 @@ def build_parser() -> argparse.ArgumentParser:
     thread_model.add_argument("--provider", required=True)
     thread_model.add_argument("--model", required=True)
     thread_model.set_defaults(handler=thread_model_command)
+
+    thread_rename = thread_commands.add_parser("rename", help="rename a thread and verify its title")
+    thread_rename.add_argument("environment")
+    thread_rename.add_argument("thread_id")
+    thread_rename.add_argument("title")
+    thread_rename.set_defaults(handler=thread_rename_command)
+
+    thread_archive = thread_commands.add_parser("archive", help="archive a thread")
+    thread_archive.add_argument("environment")
+    thread_archive.add_argument("thread_id")
+    thread_archive.set_defaults(handler=thread_archive_command)
+
+    thread_unarchive = thread_commands.add_parser("unarchive", help="restore an archived thread")
+    thread_unarchive.add_argument("environment")
+    thread_unarchive.add_argument("thread_id")
+    thread_unarchive.set_defaults(handler=thread_unarchive_command)
 
     thread_pending = thread_commands.add_parser("pending", help="list unresolved approvals and questions")
     thread_pending.add_argument("environment")

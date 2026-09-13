@@ -41,7 +41,7 @@ Credential values are never recorded here. Local connection state lives under `.
 | Discovery | Complete | `threads`, `thread show`, `search`, `providers`, and `models` verified live | Safe identity selection is available for write commands |
 | Monitoring | Complete | `thread follow` plus `thread pending` | Snapshot, events, timeout, resume, deduplication, and pending requests covered |
 | Task control | Complete | Live create, model change, task dispatch, completion, stop, and approval response verified | User-question response is schema- and unit-verified; the current Codex mode would not emit a live question request |
-| Lifecycle | Not started | | Rename, archive, pin, snooze, delete |
+| Lifecycle | In progress | Live rename, archive, and unarchive verified on a disposable Codex thread | Pin, snooze, delete, and diff retrieval remain |
 | Agent hardening | Not started | | Stable output, redaction, fake-server tests |
 
 ## Resume instructions
