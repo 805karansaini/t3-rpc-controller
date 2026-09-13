@@ -88,6 +88,15 @@ List configuration without exposing tokens:
 ./t3_rpc_controller.py environments
 ```
 
+Check authentication and native RPC access on every configured machine:
+
+```bash
+./t3_rpc_controller.py health
+./t3_rpc_controller.py health --environment mac
+```
+
+Multi-machine reads include successful results and an `errors` object when one target is unavailable. The command exits with status 1 if any requested target failed, while preserving data returned by healthy targets.
+
 Run tests:
 
 ```bash

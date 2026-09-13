@@ -18,9 +18,9 @@ The work is complete when an agent can use documented commands to identify a mac
 
 ### 1. Harden configuration and connectivity
 
-- [ ] Add a `health` command that checks authentication and RPC access per environment.
-- [ ] Return useful partial results when one of several environments is unavailable.
-- [ ] Ensure commands construct safe output instead of printing stored configuration directly.
+- [x] Add a `health` command that checks authentication and RPC access per environment.
+- [x] Return useful partial results when one of several environments is unavailable.
+- [x] Ensure commands construct safe output instead of printing stored configuration directly.
 - [ ] Add environment removal and credential-renewal guidance without exposing credentials.
 - [ ] Test HTTP exchange, WebSocket messages, timeouts, malformed responses, and command-line exit codes.
 

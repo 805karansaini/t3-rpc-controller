@@ -145,6 +145,41 @@ def websocket_url(http_url: str, ticket: str) -> str:
     return f"{scheme}://{parsed.netloc}/ws?wsTicket={ticket}"
 
 
+async def rpc_call(
+    http_url: str,
+    token: str,
+    tag: str,
+    payload: object,
+    timeout: float = 30,
+) -> object:
+    ticket_result = await asyncio.to_thread(
+        http_json,
+        f"{http_url}/api/auth/websocket-ticket",
+        token,
+        "POST",
+    )
+    ticket = ticket_result.get("ticket")
+    if not isinstance(ticket, str) or not ticket:
+        raise RuntimeError("T3 did not return a WebSocket ticket")
+
+    request_id = f"t3-controller-{uuid.uuid4()}"
+    async with websockets.connect(
+        websocket_url(http_url, ticket),
+        open_timeout=min(timeout, 15),
+    ) as socket:
+        await socket.send(json.dumps({"_tag": "Ping"}))
+        await socket.send(json.dumps(make_request(request_id, tag, payload)))
+        while True:
+            raw_message = await asyncio.wait_for(socket.recv(), timeout=timeout)
+            message = json.loads(raw_message)
+            if message.get("_tag") != "Exit" or message.get("requestId") != request_id:
+                continue
+            exit_value = message.get("exit", {})
+            if exit_value.get("_tag") == "Success":
+                return exit_value.get("value")
+            raise RuntimeError(f"T3 RPC {tag} failed: {json.dumps(exit_value)}")
+
+
 def http_form(url: str, payload: dict[str, str]) -> dict:
     request = urllib.request.Request(
         url,
@@ -238,7 +273,10 @@ async def list_projects(store: EnvironmentStore, name: str) -> list[dict]:
     return project_rows_from_snapshot(snapshot)
 
 
-async def list_many_projects(store: EnvironmentStore, names: list[str]) -> dict[str, list[dict]]:
+async def list_many_projects(
+    store: EnvironmentStore,
+    names: list[str],
+) -> tuple[dict[str, list[dict]], dict[str, str]]:
     results = await asyncio.gather(*(list_projects(store, name) for name in names), return_exceptions=True)
     output: dict[str, list[dict]] = {}
     errors: dict[str, str] = {}
@@ -247,10 +285,40 @@ async def list_many_projects(store: EnvironmentStore, names: list[str]) -> dict[
             errors[name] = str(result)
         else:
             output[name] = result
-    if errors:
-        successful = {name: len(projects) for name, projects in output.items()}
-        raise RuntimeError(json.dumps({"errors": errors, "successful_counts": successful}))
-    return output
+    return output, errors
+
+
+def safe_environment_config(store: EnvironmentStore) -> dict[str, dict[str, object]]:
+    safe: dict[str, dict[str, object]] = {}
+    for name, entry in store.load_config().items():
+        url = entry.get("url") if isinstance(entry, dict) else None
+        safe[name] = {"url": url}
+    return safe
+
+
+async def check_environment(store: EnvironmentStore, name: str) -> dict:
+    row: dict[str, object] = {
+        "environment": name,
+        "url": None,
+        "authenticated": False,
+        "rpc": False,
+    }
+    try:
+        url, token = store.load(name)
+        row["url"] = url
+        session = await asyncio.to_thread(http_json, f"{url}/api/auth/session", token)
+        if session.get("authenticated") is not True:
+            raise RuntimeError("stored T3 session is not authenticated")
+        row["authenticated"] = True
+        await rpc_call(url, token, "server.probe", {})
+        row["rpc"] = True
+    except Exception as error:
+        row["error"] = str(error)
+    return row
+
+
+async def check_many_environments(store: EnvironmentStore, names: list[str]) -> list[dict]:
+    return list(await asyncio.gather(*(check_environment(store, name) for name in names)))
 
 
 def configure_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
@@ -287,14 +355,26 @@ def projects_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
     names = store.names() if not args.environment or args.environment == ["all"] else args.environment
     if not names:
         raise RuntimeError("no environments configured")
-    projects_by_environment = asyncio.run(list_many_projects(store, names))
+    projects_by_environment, errors = asyncio.run(list_many_projects(store, names))
     result = {
+        "ok": not errors,
         "counts": {name: len(projects) for name, projects in projects_by_environment.items()},
         "total": sum(len(projects) for projects in projects_by_environment.values()),
         "projects": merge_environment_projects(projects_by_environment),
+        "errors": errors,
     }
     print(json.dumps(result, indent=2))
-    return 0
+    return 0 if not errors else 1
+
+
+def health_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
+    names = store.names() if not args.environment or args.environment == ["all"] else args.environment
+    if not names:
+        raise RuntimeError("no environments configured")
+    rows = asyncio.run(check_many_environments(store, names))
+    ok = all(row.get("authenticated") is True and row.get("rpc") is True for row in rows)
+    print(json.dumps({"ok": ok, "environments": rows}, indent=2))
+    return 0 if ok else 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -314,7 +394,13 @@ def build_parser() -> argparse.ArgumentParser:
     pair.set_defaults(handler=pair_command)
 
     environments = subparsers.add_parser("environments", help="list configured environments")
-    environments.set_defaults(handler=lambda store, args: print(json.dumps(store.load_config(), indent=2)) or 0)
+    environments.set_defaults(
+        handler=lambda store, args: print(json.dumps(safe_environment_config(store), indent=2)) or 0
+    )
+
+    health = subparsers.add_parser("health", help="check authentication and RPC access")
+    health.add_argument("--environment", action="append")
+    health.set_defaults(handler=health_command)
 
     projects = subparsers.add_parser("projects", help="list T3 projects over native RPC")
     projects.add_argument("--environment", action="append")

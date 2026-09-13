@@ -4,7 +4,7 @@ import stat
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from t3_rpc_controller import (
     DEFAULT_HOME,
@@ -18,6 +18,8 @@ from t3_rpc_controller import (
     oauth_exchange_payload,
     project_rows_from_snapshot,
     read_pairing_credential,
+    safe_environment_config,
+    list_many_projects,
 )
 
 
@@ -52,6 +54,18 @@ class EnvironmentStoreTests(unittest.TestCase):
             store = EnvironmentStore(Path(directory))
             with self.assertRaises(ValueError):
                 store.save("../escape", "http://localhost:3773", "secret")
+
+    def test_safe_environment_config_only_returns_urls(self):
+        store = EnvironmentStore(Path("/unused"))
+        with patch.object(
+            store,
+            "load_config",
+            return_value={"mac": {"url": "http://localhost:3773", "token": "secret"}},
+        ):
+            self.assertEqual(
+                safe_environment_config(store),
+                {"mac": {"url": "http://localhost:3773"}},
+            )
 
 
 class RpcProtocolTests(unittest.TestCase):
@@ -140,6 +154,20 @@ class RpcProtocolTests(unittest.TestCase):
                 {"environment": "mac", "id": "same", "title": "Repo", "workspaceRoot": "/mac/repo"},
             ],
         )
+
+
+class MultiEnvironmentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_project_listing_preserves_successes_when_one_environment_fails(self):
+        async def fake_list(_store, name):
+            if name == "i7":
+                raise RuntimeError("offline")
+            return [{"id": "p1", "title": "Repo", "workspaceRoot": "/repo"}]
+
+        with patch("t3_rpc_controller.list_projects", new=AsyncMock(side_effect=fake_list)):
+            projects, errors = await list_many_projects(EnvironmentStore(Path("/unused")), ["mac", "i7"])
+
+        self.assertEqual(projects["mac"][0]["id"], "p1")
+        self.assertEqual(errors, {"i7": "offline"})
 
 
 if __name__ == "__main__":
