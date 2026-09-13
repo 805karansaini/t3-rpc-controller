@@ -116,6 +116,8 @@ def redact_sensitive(value: object) -> object:
 
 
 def safe_error_message(error: object) -> str:
+    if isinstance(error, (dict, list)):
+        return json.dumps(redact_sensitive(error), separators=(",", ":"))
     return str(redact_sensitive(str(error)))
 
 

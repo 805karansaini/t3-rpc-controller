@@ -37,12 +37,12 @@ Credential values are never recorded here. Local connection state lives under `.
 | Phase | Status | Evidence | Notes |
 | --- | --- | --- | --- |
 | Baseline | Complete | `make check`, `make smoke`, and both-machine project query | First commit contains no local state or credentials |
-| Connectivity | In progress | `health`, safe environment output, partial project results, recoverable environment removal | Transport failure tests remain |
+| Connectivity | Complete | Live health on both machines plus local HTTP/WebSocket success, failure, malformed-message, and timeout tests | No credential values are present in tracked files or error output |
 | Discovery | Complete | `threads`, `thread show`, `search`, `providers`, and `models` verified live | Safe identity selection is available for write commands |
 | Monitoring | Complete | `thread follow` plus `thread pending` | Snapshot, events, timeout, resume, deduplication, and pending requests covered |
 | Task control | Complete | Live create, model change, task dispatch, completion, stop, and approval response verified | User-question response is schema- and unit-verified; the current Codex mode would not emit a live question request |
 | Lifecycle | Complete | Live rename, archive, pin, snooze, settle, history, diff, and guarded deletion verified | Three disposable build-test threads were removed and confirmed absent |
-| Agent hardening | In progress | JSON envelopes, argument bounds, redaction, live no-change previews, and compatibility checks on both machines | Fake-server transport tests and final smoke remain |
+| Agent hardening | In progress | JSON envelopes, bounds, redaction, previews, compatibility checks, and a 39-test suite including a fake T3 endpoint | Final both-machine smoke and documentation review remain |
 
 ## Resume instructions
 

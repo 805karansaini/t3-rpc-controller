@@ -22,7 +22,7 @@ The work is complete when an agent can use documented commands to identify a mac
 - [x] Return useful partial results when one of several environments is unavailable.
 - [x] Ensure commands construct safe output instead of printing stored configuration directly.
 - [x] Add environment removal and credential-renewal guidance without exposing credentials.
-- [ ] Test HTTP exchange, WebSocket messages, timeouts, malformed responses, and command-line exit codes.
+- [x] Test HTTP exchange, WebSocket messages, timeouts, malformed responses, and command-line exit codes.
 
 ### 2. Add read-only discovery
 
@@ -70,7 +70,7 @@ The work is complete when an agent can use documented commands to identify a mac
 - [x] Add `--dry-run` for state-changing commands where practical.
 - [x] Redact credentials, tickets, pairing values, and sensitive server errors.
 - [x] Add compatibility diagnostics for T3 Nightly protocol changes.
-- [ ] Add representative integration tests with a fake T3 server.
+- [x] Add representative integration tests with a fake T3 server.
 - [ ] Run the full checks and live read-only smoke tests on both machines.
 - [ ] Update the README and handoff record with the final command reference and verified limitations.
 

@@ -254,8 +254,10 @@ Deletion refuses a mismatched confirmation and a thread with a running turn. It 
 Run tests:
 
 ```bash
-python3 -m unittest -v test_t3_rpc_controller.py
+make check
 ```
+
+The suite includes a local fake T3 endpoint. It exercises bearer authentication, WebSocket ticket exchange, the initial ping, Effect RPC headers, streamed snapshots, server failures, malformed messages, timeouts, and secret redaction without contacting the Mac or i7 T3 installations.
 
 ## Pair or renew an environment
 
