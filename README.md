@@ -216,6 +216,15 @@ Wait until a thread finishes or needs approval or input:
 
 Use the `messageId` returned by `thread send` when waiting for newly submitted work. This prevents an older completed turn from being mistaken for completion of the new task. A pending approval or question returns immediately with `reason: attention-required`. A completed turn exits successfully; an interrupted, failed, or timed-out turn exits with status 1.
 
+Submit and wait in one call when an agent does not need the live event stream:
+
+```bash
+./t3_rpc_controller.py thread run mac THREAD_ID "Task text" --timeout 600
+./t3_rpc_controller.py thread run mac THREAD_ID --prompt-file /path/to/prompt.md --timeout 600
+```
+
+`thread run` uses the same Codex-only check, safe runtime default, retry identifiers, and exact-message tracking as `thread send` followed by `thread wait`. It returns when the task completes, fails, times out, or asks for approval or user input. Use `--dry-run` to validate the submission without starting work.
+
 Interrupt the active turn, or stop the provider session completely:
 
 ```bash

@@ -1483,6 +1483,41 @@ async def wait_thread_operation(store: EnvironmentStore, args: argparse.Namespac
         await asyncio.sleep(args.poll_interval)
 
 
+async def run_thread_operation(
+    store: EnvironmentStore,
+    args: argparse.Namespace,
+    text: str,
+) -> dict:
+    submission = await send_thread_operation(store, args, text)
+    if submission.get("dryRun") is True:
+        return {
+            "ok": True,
+            "dryRun": True,
+            "operation": "thread.run",
+            "submission": submission,
+            "wait": {"planned": True, "timeout": args.timeout},
+        }
+    wait_args = argparse.Namespace(
+        environment=args.environment,
+        thread_id=args.thread_id,
+        message_id=submission["messageId"],
+        timeout=args.timeout,
+        poll_interval=args.poll_interval,
+    )
+    outcome = await wait_thread_operation(store, wait_args)
+    return {
+        "ok": outcome.get("ok") is True,
+        "operation": "thread.run",
+        "submission": {
+            "commandId": submission["commandId"],
+            "messageId": submission["messageId"],
+            "turnId": submission.get("turnId"),
+            "reconciled": submission.get("reconciled", False),
+        },
+        "outcome": outcome,
+    }
+
+
 async def approval_response_operation(store: EnvironmentStore, args: argparse.Namespace) -> dict:
     before = await require_thread_snapshot(store, args.environment, args.thread_id, 20)
     require_codex_provider((before["thread"].get("modelSelection") or {}).get("instanceId", ""))
@@ -1916,6 +1951,13 @@ def thread_wait_command(store: EnvironmentStore, args: argparse.Namespace) -> in
     return 0 if result.get("ok") is True else 1
 
 
+def thread_run_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
+    text = read_prompt(args.message, args.prompt_file)
+    result = asyncio.run(run_thread_operation(store, args, text))
+    emit_json(result, indent=2)
+    return 0 if result.get("ok") is True else 1
+
+
 def thread_stop_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
     result = asyncio.run(stop_thread_operation(store, args))
     emit_json(result, indent=2)
@@ -2234,6 +2276,28 @@ def build_parser() -> argparse.ArgumentParser:
     thread_wait.add_argument("--timeout", type=nonnegative_float, default=600)
     thread_wait.add_argument("--poll-interval", type=positive_float, default=0.5)
     thread_wait.set_defaults(handler=thread_wait_command)
+
+    thread_run = thread_commands.add_parser(
+        "run",
+        help="submit one task and wait until it finishes or needs attention",
+    )
+    thread_run.add_argument("environment")
+    thread_run.add_argument("thread_id")
+    thread_run.add_argument("message", nargs="?")
+    thread_run.add_argument("--prompt-file", help="read the task from a file, or use - for standard input")
+    thread_run.add_argument("--provider")
+    thread_run.add_argument("--model")
+    thread_run.add_argument(
+        "--runtime-mode",
+        choices=["approval-required", "auto-accept-edits", "auto", "full-access"],
+    )
+    thread_run.add_argument("--interaction-mode", choices=["default", "plan"])
+    thread_run.add_argument("--message-id", help="reuse this UUID after an uncertain submission")
+    thread_run.add_argument("--command-id", help="reuse this UUID after an uncertain submission")
+    thread_run.add_argument("--timeout", type=nonnegative_float, default=600)
+    thread_run.add_argument("--poll-interval", type=positive_float, default=0.5)
+    add_dry_run(thread_run)
+    thread_run.set_defaults(handler=thread_run_command)
 
     thread_stop = thread_commands.add_parser("stop", help="interrupt a running turn or stop its provider session")
     thread_stop.add_argument("environment")

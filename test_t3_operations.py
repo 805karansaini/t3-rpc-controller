@@ -13,6 +13,7 @@ from t3_rpc_controller import (
     delete_thread_operation,
     follow_thread,
     rename_thread_operation,
+    run_thread_operation,
     send_thread_operation,
     set_thread_model_operation,
     stop_thread_operation,
@@ -243,6 +244,43 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
             result = await wait_thread_operation(object(), command_args)
         self.assertEqual(result["reason"], "attention-required")
         self.assertEqual(result["pending"][0]["requestId"], "approval-1")
+
+    async def test_run_submits_then_waits_for_the_exact_message(self):
+        message_id = "22222222-2222-4222-8222-222222222222"
+        command_args = args(
+            environment="mac",
+            thread_id="t1",
+            timeout=30,
+            poll_interval=0.25,
+        )
+        submission = {
+            "ok": True,
+            "commandId": "command-1",
+            "messageId": message_id,
+            "turnId": "turn-1",
+            "reconciled": False,
+        }
+        outcome = {
+            "ok": True,
+            "operation": "thread.wait",
+            "reason": "terminal-state",
+            "turnState": "completed",
+        }
+        with (
+            patch(
+                "t3_rpc_controller.send_thread_operation",
+                new=AsyncMock(return_value=submission),
+            ) as send,
+            patch(
+                "t3_rpc_controller.wait_thread_operation",
+                new=AsyncMock(return_value=outcome),
+            ) as wait,
+        ):
+            result = await run_thread_operation(object(), command_args, "Do work")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["submission"]["messageId"], message_id)
+        self.assertEqual(send.await_args.args[2], "Do work")
+        self.assertEqual(wait.await_args.args[1].message_id, message_id)
 
     async def test_send_uses_codex_and_safe_runtime_default(self):
         thread = {
