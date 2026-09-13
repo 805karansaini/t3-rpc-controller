@@ -143,6 +143,33 @@ List models or narrow the result to an exact provider instance:
 ./t3_rpc_controller.py models --environment mac --provider codex
 ```
 
+Create a thread with explicit machine, project, provider, model, and safety modes:
+
+```bash
+./t3_rpc_controller.py thread create mac PROJECT_ID \
+  --title "Task title" \
+  --provider codex \
+  --model gpt-6-astra \
+  --runtime-mode approval-required \
+  --interaction-mode default
+```
+
+Send a task. The result confirms the message ID and current thread state without repeating the prompt:
+
+```bash
+./t3_rpc_controller.py thread send mac THREAD_ID "Task text"
+./t3_rpc_controller.py thread send mac THREAD_ID --prompt-file /path/to/prompt.md
+printf '%s' "Task text" | ./t3_rpc_controller.py thread send mac THREAD_ID --prompt-file -
+```
+
+Change the provider and model for an existing thread:
+
+```bash
+./t3_rpc_controller.py thread model mac THREAD_ID --provider codex --model gpt-5.6-luna
+```
+
+The controller verifies the project, provider, and model before dispatch. It then reads the thread back and only reports success after T3 confirms the new state.
+
 Run tests:
 
 ```bash

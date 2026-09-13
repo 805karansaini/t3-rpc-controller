@@ -10,6 +10,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
 
@@ -148,6 +149,88 @@ def is_terminal_thread_event(item: dict) -> bool:
         return False
     status = (event.get("payload", {}).get("session") or {}).get("status")
     return status in {"ready", "stopped", "interrupted", "error"}
+
+
+def is_terminal_thread_snapshot(snapshot: dict) -> bool:
+    thread = snapshot.get("thread", {})
+    latest_state = (thread.get("latestTurn") or {}).get("state")
+    session_status = (thread.get("session") or {}).get("status")
+    return latest_state != "running" and session_status in {
+        "ready",
+        "stopped",
+        "interrupted",
+        "error",
+    }
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def model_selection(instance_id: str, model: str) -> dict:
+    return {"instanceId": instance_id, "model": model}
+
+
+def build_thread_create_command(
+    *,
+    thread_id: str,
+    project_id: str,
+    title: str,
+    selection: dict,
+    runtime_mode: str,
+    interaction_mode: str,
+    branch: str | None,
+    worktree_path: str | None,
+) -> dict:
+    return {
+        "type": "thread.create",
+        "commandId": str(uuid.uuid4()),
+        "threadId": thread_id,
+        "projectId": project_id,
+        "title": title,
+        "modelSelection": selection,
+        "runtimeMode": runtime_mode,
+        "interactionMode": interaction_mode,
+        "branch": branch,
+        "worktreePath": worktree_path,
+        "createdAt": utc_now(),
+    }
+
+
+def build_turn_start_command(
+    *,
+    thread_id: str,
+    text: str,
+    runtime_mode: str,
+    interaction_mode: str,
+    selection: dict | None = None,
+) -> dict:
+    command = {
+        "type": "thread.turn.start",
+        "commandId": str(uuid.uuid4()),
+        "threadId": thread_id,
+        "message": {
+            "messageId": str(uuid.uuid4()),
+            "role": "user",
+            "text": text,
+            "attachments": [],
+        },
+        "runtimeMode": runtime_mode,
+        "interactionMode": interaction_mode,
+        "createdAt": utc_now(),
+    }
+    if selection is not None:
+        command["modelSelection"] = selection
+    return command
+
+
+def build_thread_model_command(thread_id: str, selection: dict) -> dict:
+    return {
+        "type": "thread.meta.update",
+        "commandId": str(uuid.uuid4()),
+        "threadId": thread_id,
+        "modelSelection": selection,
+    }
 
 
 def thread_row(thread: dict, environment: str) -> dict:
@@ -489,6 +572,16 @@ async def follow_thread(
                                 json.dumps(thread_snapshot_summary(item["snapshot"], environment)),
                                 flush=True,
                             )
+                            if until_terminal and is_terminal_thread_snapshot(item["snapshot"]):
+                                return {
+                                    "kind": "follow-complete",
+                                    "reason": "terminal-state",
+                                    "environment": environment,
+                                    "threadId": thread_id,
+                                    "lastSequence": last_sequence,
+                                    "events": emitted_events,
+                                    "reconnects": reconnects,
+                                }
                             continue
                         if item.get("kind") == "synchronized":
                             synchronized = True
@@ -540,6 +633,7 @@ async def follow_thread(
                                 "events": emitted_events,
                                 "reconnects": reconnects,
                             }
+                    await socket.send(json.dumps({"_tag": "Ack", "requestId": request_id}))
         except asyncio.TimeoutError:
             return {
                 "kind": "follow-complete",
@@ -702,6 +796,219 @@ async def fetch_many_providers(
     return output, errors
 
 
+async def validate_project_and_model(
+    store: EnvironmentStore,
+    environment: str,
+    project_id: str,
+    instance_id: str,
+    model_slug: str,
+) -> tuple[dict, dict, dict]:
+    url, token = store.load(environment)
+    shell, providers = await asyncio.gather(
+        fetch_shell_snapshot(url, token),
+        fetch_providers(store, environment),
+    )
+    project = next((item for item in shell.get("projects", []) if item.get("id") == project_id), None)
+    if project is None:
+        raise ValueError(f"project {project_id} does not exist in environment {environment}")
+    provider = next((item for item in providers if item.get("instanceId") == instance_id), None)
+    if provider is None:
+        raise ValueError(f"provider instance {instance_id} does not exist in environment {environment}")
+    if provider.get("availability", "available") != "available":
+        raise ValueError(f"provider instance {instance_id} is unavailable")
+    if provider.get("enabled") is not True or provider.get("installed") is not True:
+        raise ValueError(f"provider instance {instance_id} is not enabled and installed")
+    if provider.get("status") not in {"ready", "warning"}:
+        raise ValueError(f"provider instance {instance_id} is not ready")
+    model = next((item for item in provider.get("models", []) if item.get("slug") == model_slug), None)
+    if model is None:
+        raise ValueError(f"model {model_slug} is not available from provider instance {instance_id}")
+    return project, provider, model
+
+
+async def validate_model(
+    store: EnvironmentStore,
+    environment: str,
+    instance_id: str,
+    model_slug: str,
+) -> tuple[dict, dict]:
+    providers = await fetch_providers(store, environment)
+    provider = next((item for item in providers if item.get("instanceId") == instance_id), None)
+    if provider is None:
+        raise ValueError(f"provider instance {instance_id} does not exist in environment {environment}")
+    if provider.get("availability", "available") != "available":
+        raise ValueError(f"provider instance {instance_id} is unavailable")
+    if provider.get("enabled") is not True or provider.get("installed") is not True:
+        raise ValueError(f"provider instance {instance_id} is not enabled and installed")
+    if provider.get("status") not in {"ready", "warning"}:
+        raise ValueError(f"provider instance {instance_id} is not ready")
+    model = next((item for item in provider.get("models", []) if item.get("slug") == model_slug), None)
+    if model is None:
+        raise ValueError(f"model {model_slug} is not available from provider instance {instance_id}")
+    return provider, model
+
+
+async def dispatch_command(store: EnvironmentStore, environment: str, command: dict) -> dict:
+    url, token = store.load(environment)
+    result = await rpc_call(url, token, "orchestration.dispatchCommand", command)
+    if not isinstance(result, dict) or not isinstance(result.get("sequence"), int):
+        raise RuntimeError("T3 returned an invalid command receipt")
+    return result
+
+
+async def wait_for_shell_thread(
+    store: EnvironmentStore,
+    environment: str,
+    thread_id: str,
+    predicate,
+    timeout: float = 10,
+) -> dict:
+    url, token = store.load(environment)
+    deadline = time.monotonic() + timeout
+    while True:
+        snapshot = await fetch_shell_snapshot(url, token)
+        thread = next((item for item in snapshot.get("threads", []) if item.get("id") == thread_id), None)
+        if thread is not None and predicate(thread):
+            return thread
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"T3 did not confirm the requested state for thread {thread_id}")
+        await asyncio.sleep(0.2)
+
+
+async def require_thread_snapshot(
+    store: EnvironmentStore,
+    environment: str,
+    thread_id: str,
+    turn_limit: int = 5,
+) -> dict:
+    url, token = store.load(environment)
+    snapshot = await fetch_thread_snapshot(url, token, thread_id, turn_limit)
+    thread = snapshot.get("thread")
+    if not isinstance(thread, dict) or thread.get("id") != thread_id:
+        raise RuntimeError(f"T3 did not return the requested thread {thread_id}")
+    if thread.get("deletedAt") is not None:
+        raise ValueError(f"thread {thread_id} is deleted")
+    return snapshot
+
+
+async def create_thread_operation(store: EnvironmentStore, args: argparse.Namespace) -> dict:
+    await validate_project_and_model(
+        store,
+        args.environment,
+        args.project_id,
+        args.provider,
+        args.model,
+    )
+    thread_id = str(uuid.uuid4())
+    command = build_thread_create_command(
+        thread_id=thread_id,
+        project_id=args.project_id,
+        title=args.title,
+        selection=model_selection(args.provider, args.model),
+        runtime_mode=args.runtime_mode,
+        interaction_mode=args.interaction_mode,
+        branch=args.branch,
+        worktree_path=args.worktree_path,
+    )
+    receipt = await dispatch_command(store, args.environment, command)
+    confirmed = await wait_for_shell_thread(
+        store,
+        args.environment,
+        thread_id,
+        lambda thread: thread.get("modelSelection") == command["modelSelection"],
+    )
+    return {
+        "ok": True,
+        "operation": "thread.create",
+        "commandId": command["commandId"],
+        "receipt": receipt,
+        "thread": thread_row(confirmed, args.environment),
+    }
+
+
+def read_prompt(message: str | None, prompt_file: str | None) -> str:
+    if prompt_file and message is not None:
+        raise ValueError("provide either a message argument or --prompt-file, not both")
+    if prompt_file:
+        text = sys.stdin.read() if prompt_file == "-" else Path(prompt_file).expanduser().read_text()
+    elif message is not None:
+        text = message
+    else:
+        raise ValueError("provide a message argument or --prompt-file")
+    if not text.strip():
+        raise ValueError("task message cannot be empty")
+    if len(text) > 120_000:
+        raise ValueError("task message exceeds T3's 120000 character limit")
+    return text
+
+
+async def send_thread_operation(store: EnvironmentStore, args: argparse.Namespace, text: str) -> dict:
+    before = await require_thread_snapshot(store, args.environment, args.thread_id)
+    thread = before["thread"]
+    selection = None
+    if bool(args.provider) != bool(args.model):
+        raise ValueError("--provider and --model must be supplied together")
+    if args.provider and args.model:
+        provider, _ = await validate_model(store, args.environment, args.provider, args.model)
+        current = thread.get("modelSelection") or {}
+        if (
+            provider.get("requiresNewThreadForModelChange") is True
+            and current.get("model") != args.model
+        ):
+            raise ValueError(f"provider {args.provider} requires a new thread to change models")
+        selection = model_selection(args.provider, args.model)
+    command = build_turn_start_command(
+        thread_id=args.thread_id,
+        text=text,
+        runtime_mode=args.runtime_mode or thread.get("runtimeMode") or "full-access",
+        interaction_mode=args.interaction_mode or thread.get("interactionMode") or "default",
+        selection=selection,
+    )
+    receipt = await dispatch_command(store, args.environment, command)
+    message_id = command["message"]["messageId"]
+
+    async def message_was_recorded() -> dict:
+        deadline = time.monotonic() + 10
+        while True:
+            snapshot = await require_thread_snapshot(store, args.environment, args.thread_id)
+            if any(message.get("id") == message_id for message in snapshot["thread"].get("messages", [])):
+                return snapshot
+            if time.monotonic() >= deadline:
+                raise RuntimeError("T3 accepted the task but did not confirm its user message")
+            await asyncio.sleep(0.2)
+
+    confirmed = await message_was_recorded()
+    return {
+        "ok": True,
+        "operation": "thread.turn.start",
+        "commandId": command["commandId"],
+        "messageId": message_id,
+        "receipt": receipt,
+        "thread": thread_row(confirmed["thread"], args.environment),
+    }
+
+
+async def set_thread_model_operation(store: EnvironmentStore, args: argparse.Namespace) -> dict:
+    await require_thread_snapshot(store, args.environment, args.thread_id)
+    await validate_model(store, args.environment, args.provider, args.model)
+    selection = model_selection(args.provider, args.model)
+    command = build_thread_model_command(args.thread_id, selection)
+    receipt = await dispatch_command(store, args.environment, command)
+    confirmed = await wait_for_shell_thread(
+        store,
+        args.environment,
+        args.thread_id,
+        lambda thread: thread.get("modelSelection") == selection,
+    )
+    return {
+        "ok": True,
+        "operation": "thread.meta.update",
+        "commandId": command["commandId"],
+        "receipt": receipt,
+        "thread": thread_row(confirmed, args.environment),
+    }
+
+
 async def list_many_projects(
     store: EnvironmentStore,
     names: list[str],
@@ -850,6 +1157,25 @@ def thread_follow_command(store: EnvironmentStore, args: argparse.Namespace) -> 
     return 0
 
 
+def thread_create_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
+    result = asyncio.run(create_thread_operation(store, args))
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def thread_send_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
+    text = read_prompt(args.message, args.prompt_file)
+    result = asyncio.run(send_thread_operation(store, args, text))
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def thread_model_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
+    result = asyncio.run(set_thread_model_operation(store, args))
+    print(json.dumps(result, indent=2))
+    return 0
+
+
 def search_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
     names = store.names() if not args.environment or args.environment == ["all"] else args.environment
     if not names:
@@ -967,6 +1293,43 @@ def build_parser() -> argparse.ArgumentParser:
     thread_follow.add_argument("--until-terminal", action="store_true")
     thread_follow.add_argument("--turn-limit", type=int, default=20)
     thread_follow.set_defaults(handler=thread_follow_command)
+
+    thread_create = thread_commands.add_parser("create", help="create a thread with an explicit provider and model")
+    thread_create.add_argument("environment")
+    thread_create.add_argument("project_id")
+    thread_create.add_argument("--title", required=True)
+    thread_create.add_argument("--provider", required=True)
+    thread_create.add_argument("--model", required=True)
+    thread_create.add_argument(
+        "--runtime-mode",
+        choices=["approval-required", "auto-accept-edits", "auto", "full-access"],
+        default="full-access",
+    )
+    thread_create.add_argument("--interaction-mode", choices=["default", "plan"], default="default")
+    thread_create.add_argument("--branch")
+    thread_create.add_argument("--worktree-path")
+    thread_create.set_defaults(handler=thread_create_command)
+
+    thread_send = thread_commands.add_parser("send", help="send a task to an existing thread")
+    thread_send.add_argument("environment")
+    thread_send.add_argument("thread_id")
+    thread_send.add_argument("message", nargs="?")
+    thread_send.add_argument("--prompt-file", help="read the task from a file, or use - for standard input")
+    thread_send.add_argument("--provider")
+    thread_send.add_argument("--model")
+    thread_send.add_argument(
+        "--runtime-mode",
+        choices=["approval-required", "auto-accept-edits", "auto", "full-access"],
+    )
+    thread_send.add_argument("--interaction-mode", choices=["default", "plan"])
+    thread_send.set_defaults(handler=thread_send_command)
+
+    thread_model = thread_commands.add_parser("model", help="change the provider and model for a thread")
+    thread_model.add_argument("environment")
+    thread_model.add_argument("thread_id")
+    thread_model.add_argument("--provider", required=True)
+    thread_model.add_argument("--model", required=True)
+    thread_model.set_defaults(handler=thread_model_command)
 
     search = subparsers.add_parser("search", help="search user and assistant thread messages")
     search.add_argument("query")

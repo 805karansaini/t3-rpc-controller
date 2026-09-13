@@ -11,6 +11,9 @@ from t3_rpc_controller import (
     EnvironmentStore,
     bearer_token_from_bootstrap,
     bearer_token_from_oauth,
+    build_thread_create_command,
+    build_thread_model_command,
+    build_turn_start_command,
     filter_thread_rows,
     first_shell_snapshot,
     first_stream_snapshot,
@@ -24,7 +27,10 @@ from t3_rpc_controller import (
     safe_environment_config,
     safe_model_row,
     is_terminal_thread_event,
+    is_terminal_thread_snapshot,
     thread_snapshot_summary,
+    model_selection,
+    read_prompt,
     list_many_projects,
 )
 
@@ -283,6 +289,53 @@ class RpcProtocolTests(unittest.TestCase):
                 }
             )
         )
+
+    def test_terminal_snapshot_requires_no_running_turn(self):
+        self.assertTrue(
+            is_terminal_thread_snapshot(
+                {"thread": {"latestTurn": {"state": "completed"}, "session": {"status": "ready"}}}
+            )
+        )
+        self.assertFalse(
+            is_terminal_thread_snapshot(
+                {"thread": {"latestTurn": {"state": "running"}, "session": {"status": "ready"}}}
+            )
+        )
+
+    def test_builds_thread_create_with_explicit_routing(self):
+        command = build_thread_create_command(
+            thread_id="t1",
+            project_id="p1",
+            title="Controller test",
+            selection=model_selection("codex_work", "gpt-test"),
+            runtime_mode="approval-required",
+            interaction_mode="plan",
+            branch=None,
+            worktree_path=None,
+        )
+        self.assertEqual(command["type"], "thread.create")
+        self.assertEqual(command["modelSelection"], {"instanceId": "codex_work", "model": "gpt-test"})
+        self.assertEqual(command["projectId"], "p1")
+
+    def test_builds_turn_start_without_echoing_requirements_into_output_helpers(self):
+        command = build_turn_start_command(
+            thread_id="t1",
+            text="Do the work",
+            runtime_mode="full-access",
+            interaction_mode="default",
+        )
+        self.assertEqual(command["message"]["text"], "Do the work")
+        self.assertEqual(command["message"]["role"], "user")
+        self.assertEqual(command["message"]["attachments"], [])
+
+    def test_builds_model_update_and_reads_prompt_files(self):
+        command = build_thread_model_command("t1", model_selection("codex", "gpt-test"))
+        self.assertEqual(command["type"], "thread.meta.update")
+        self.assertEqual(command["modelSelection"]["model"], "gpt-test")
+        with tempfile.TemporaryDirectory() as directory:
+            prompt = Path(directory) / "prompt.txt"
+            prompt.write_text("Task from file")
+            self.assertEqual(read_prompt(None, str(prompt)), "Task from file")
 
 
 class MultiEnvironmentTests(unittest.IsolatedAsyncioTestCase):

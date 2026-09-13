@@ -42,11 +42,11 @@ The work is complete when an agent can use documented commands to identify a mac
 
 ### 4. Create and run work
 
-- [ ] Create a thread in an explicitly selected environment and project.
-- [ ] Select and validate a provider instance and model.
-- [ ] Send a task to an existing or newly created thread.
-- [ ] Read the thread back after dispatch and return the confirmed task state.
-- [ ] Support interaction and runtime modes accepted by the installed T3 build.
+- [x] Create a thread in an explicitly selected environment and project.
+- [x] Select and validate a provider instance and model.
+- [x] Send a task to an existing or newly created thread.
+- [x] Read the thread back after dispatch and return the confirmed task state.
+- [x] Support interaction and runtime modes accepted by the installed T3 build.
 
 ### 5. Control active work
 
