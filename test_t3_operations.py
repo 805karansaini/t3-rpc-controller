@@ -62,10 +62,14 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
                     raise OSError("simulated disconnect")
                 raise asyncio.TimeoutError()
 
+        snapshot = {
+            "kind": "snapshot",
+            "snapshot": {"thread": {"id": "t1", "messages": [], "activities": []}},
+        }
         event_1 = {"kind": "event", "event": {"eventId": "e1", "sequence": 1, "type": "x"}}
         event_2 = {"kind": "event", "event": {"eventId": "e2", "sequence": 2, "type": "x"}}
-        first = Socket([[event_1]], disconnect=True)
-        second = Socket([[event_1, event_2]])
+        first = Socket([[snapshot, event_1]], disconnect=True)
+        second = Socket([[snapshot, event_1, event_2]])
         output = io.StringIO()
         with (
             patch("t3_rpc_controller.asyncio.to_thread", new=AsyncMock(return_value={"ticket": "t"})),
@@ -85,11 +89,51 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
                 turn_limit=20,
             )
         lines = [json.loads(line) for line in output.getvalue().splitlines()]
-        self.assertEqual([line["event"]["eventId"] for line in lines], ["e1", "e2"])
+        self.assertEqual(sum(line.get("kind") == "snapshot" for line in lines), 1)
+        self.assertEqual(
+            [line["event"]["eventId"] for line in lines if line.get("kind") == "event"],
+            ["e1", "e2"],
+        )
         self.assertEqual(result["reconnects"], 1)
         self.assertEqual(result["lastSequence"], 2)
         self.assertEqual(second.request_payload["afterSequence"], 1)
         self.assertEqual(connect.call_count, 2)
+
+    async def test_follow_requires_initial_synchronization(self):
+        class Store:
+            @staticmethod
+            def load(environment):
+                return "http://fake", "fake-token"
+
+        class Socket:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                return False
+
+            async def send(self, raw):
+                pass
+
+            async def recv(self):
+                raise asyncio.TimeoutError()
+
+        with (
+            patch("t3_rpc_controller.asyncio.to_thread", new=AsyncMock(return_value={"ticket": "t"})),
+            patch("t3_rpc_controller.websockets.connect", return_value=Socket()),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "before initial synchronization"):
+                await follow_thread(
+                    Store(),
+                    "mac",
+                    "t1",
+                    after_sequence=None,
+                    timeout=1,
+                    max_events=None,
+                    retries=0,
+                    until_terminal=False,
+                    turn_limit=20,
+                )
 
     async def test_create_validates_every_requested_field_on_readback(self):
         command_args = args(

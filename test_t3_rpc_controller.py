@@ -5,8 +5,9 @@ import stat
 import tempfile
 import unittest
 from pathlib import Path
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import AsyncMock, patch
+from websockets.exceptions import WebSocketException
 
 from t3_rpc_controller import (
     DEFAULT_HOME,
@@ -50,6 +51,7 @@ from t3_rpc_controller import (
     redact_sensitive,
     require_pending_request,
     list_many_projects,
+    main,
 )
 
 
@@ -65,6 +67,22 @@ class EnvironmentStoreTests(unittest.TestCase):
     def test_rejects_hermes_url_annotation_as_cli_input(self):
         with self.assertRaisesRegex(ValueError, "plain URL"):
             normalize_url("@url:`http://100.65.116.80:3773`")
+
+    def test_unexpected_transport_failures_keep_the_json_error_contract(self):
+        error_output = io.StringIO()
+        with (
+            patch.object(EnvironmentStore, "load", return_value=("http://fake", "fake-token")),
+            patch(
+                "t3_rpc_controller.fetch_thread_snapshot",
+                new=AsyncMock(side_effect=WebSocketException("bad handshake")),
+            ),
+            redirect_stderr(error_output),
+        ):
+            result = main(["thread", "show", "mac", "thread-1"])
+        error = json.loads(error_output.getvalue())
+        self.assertEqual(result, 1)
+        self.assertEqual(error["error"]["category"], "connection")
+        self.assertNotIn("Traceback", error_output.getvalue())
 
     def test_saves_token_separately_with_owner_only_permissions(self):
         with tempfile.TemporaryDirectory() as directory:

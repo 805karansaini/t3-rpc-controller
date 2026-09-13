@@ -15,6 +15,7 @@ from pathlib import Path
 from urllib.parse import urlencode, urlparse
 
 import websockets
+from websockets.exceptions import WebSocketException
 
 
 ENV_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -129,7 +130,7 @@ def error_category(error: BaseException) -> str:
         return "configuration"
     if isinstance(error, (asyncio.TimeoutError, TimeoutError)):
         return "timeout"
-    if isinstance(error, OSError):
+    if isinstance(error, (OSError, WebSocketException)):
         return "connection"
     return "remote"
 
@@ -600,32 +601,37 @@ async def rpc_call(
     payload: object,
     timeout: float = 30,
 ) -> object:
-    ticket_result = await asyncio.to_thread(
-        http_json,
-        f"{http_url}/api/auth/websocket-ticket",
-        token,
-        "POST",
-    )
-    ticket = ticket_result.get("ticket")
-    if not isinstance(ticket, str) or not ticket:
-        raise RuntimeError("T3 did not return a WebSocket ticket")
+    async with asyncio.timeout(timeout):
+        ticket_result = await asyncio.to_thread(
+            http_json,
+            f"{http_url}/api/auth/websocket-ticket",
+            token,
+            "POST",
+        )
+        if not isinstance(ticket_result, dict):
+            raise RuntimeError("T3 returned an invalid WebSocket ticket response")
+        ticket = ticket_result.get("ticket")
+        if not isinstance(ticket, str) or not ticket:
+            raise RuntimeError("T3 did not return a WebSocket ticket")
 
-    request_id = f"t3-controller-{uuid.uuid4()}"
-    async with websockets.connect(
-        websocket_url(http_url, ticket),
-        open_timeout=min(timeout, 15),
-    ) as socket:
-        await socket.send(json.dumps({"_tag": "Ping"}))
-        await socket.send(json.dumps(make_request(request_id, tag, payload)))
-        while True:
-            raw_message = await asyncio.wait_for(socket.recv(), timeout=timeout)
-            message = json.loads(raw_message)
-            if message.get("_tag") != "Exit" or message.get("requestId") != request_id:
-                continue
-            exit_value = message.get("exit", {})
-            if exit_value.get("_tag") == "Success":
-                return exit_value.get("value")
-            raise RuntimeError(f"T3 RPC {tag} failed: {safe_error_message(exit_value)}")
+        request_id = f"t3-controller-{uuid.uuid4()}"
+        async with websockets.connect(
+            websocket_url(http_url, ticket),
+            open_timeout=min(timeout, 15),
+        ) as socket:
+            await socket.send(json.dumps({"_tag": "Ping"}))
+            await socket.send(json.dumps(make_request(request_id, tag, payload)))
+            while True:
+                raw_message = await socket.recv()
+                message = json.loads(raw_message)
+                if not isinstance(message, dict):
+                    raise RuntimeError("T3 returned an invalid RPC message")
+                if message.get("_tag") != "Exit" or message.get("requestId") != request_id:
+                    continue
+                exit_value = message.get("exit", {})
+                if exit_value.get("_tag") == "Success":
+                    return exit_value.get("value")
+                raise RuntimeError(f"T3 RPC {tag} failed: {safe_error_message(exit_value)}")
 
 
 def http_form(url: str, payload: dict[str, str]) -> dict:
@@ -686,33 +692,36 @@ def bootstrap_bearer(http_url: str, credential: str) -> str:
 
 
 async def fetch_shell_snapshot(http_url: str, token: str) -> dict:
-    ticket_result = await asyncio.to_thread(
-        http_json,
-        f"{http_url}/api/auth/websocket-ticket",
-        token,
-        "POST",
-    )
-    ticket = ticket_result.get("ticket")
-    if not isinstance(ticket, str) or not ticket:
-        raise RuntimeError("T3 did not return a WebSocket ticket")
+    async with asyncio.timeout(30):
+        ticket_result = await asyncio.to_thread(
+            http_json,
+            f"{http_url}/api/auth/websocket-ticket",
+            token,
+            "POST",
+        )
+        if not isinstance(ticket_result, dict):
+            raise RuntimeError("T3 returned an invalid WebSocket ticket response")
+        ticket = ticket_result.get("ticket")
+        if not isinstance(ticket, str) or not ticket:
+            raise RuntimeError("T3 did not return a WebSocket ticket")
 
-    request_id = f"hermes-projects-{uuid.uuid4()}"
-    messages: list[dict] = []
-    async with websockets.connect(websocket_url(http_url, ticket), open_timeout=15) as socket:
-        await socket.send(json.dumps({"_tag": "Ping"}))
-        await socket.send(json.dumps(make_request(request_id, "orchestration.subscribeShell", {})))
-        while True:
-            raw_message = await asyncio.wait_for(socket.recv(), timeout=30)
-            message = json.loads(raw_message)
-            messages.append(message)
-            snapshot = first_shell_snapshot(messages[-1:], request_id)
-            if snapshot is not None:
-                return snapshot
-            if message.get("_tag") == "Exit" and message.get("requestId") == request_id:
-                exit_value = message.get("exit", {})
-                if exit_value.get("_tag") != "Success":
-                    raise RuntimeError(f"T3 RPC failed: {safe_error_message(exit_value)}")
-                raise RuntimeError("T3 RPC stream ended before returning a shell snapshot")
+        request_id = f"hermes-projects-{uuid.uuid4()}"
+        async with websockets.connect(websocket_url(http_url, ticket), open_timeout=15) as socket:
+            await socket.send(json.dumps({"_tag": "Ping"}))
+            await socket.send(json.dumps(make_request(request_id, "orchestration.subscribeShell", {})))
+            while True:
+                raw_message = await socket.recv()
+                message = json.loads(raw_message)
+                if not isinstance(message, dict):
+                    raise RuntimeError("T3 returned an invalid shell message")
+                snapshot = first_shell_snapshot([message], request_id)
+                if snapshot is not None:
+                    return snapshot
+                if message.get("_tag") == "Exit" and message.get("requestId") == request_id:
+                    exit_value = message.get("exit", {})
+                    if exit_value.get("_tag") != "Success":
+                        raise RuntimeError(f"T3 RPC failed: {safe_error_message(exit_value)}")
+                    raise RuntimeError("T3 RPC stream ended before returning a shell snapshot")
 
 
 async def fetch_thread_snapshot(
@@ -721,36 +730,41 @@ async def fetch_thread_snapshot(
     thread_id: str,
     turn_limit: int | None = None,
 ) -> dict:
-    ticket_result = await asyncio.to_thread(
-        http_json,
-        f"{http_url}/api/auth/websocket-ticket",
-        token,
-        "POST",
-    )
-    ticket = ticket_result.get("ticket")
-    if not isinstance(ticket, str) or not ticket:
-        raise RuntimeError("T3 did not return a WebSocket ticket")
-
-    request_id = f"t3-thread-{uuid.uuid4()}"
-    payload: dict[str, object] = {"threadId": thread_id}
-    if turn_limit is not None:
-        payload["turnLimit"] = turn_limit
-    async with websockets.connect(websocket_url(http_url, ticket), open_timeout=15) as socket:
-        await socket.send(json.dumps({"_tag": "Ping"}))
-        await socket.send(
-            json.dumps(make_request(request_id, "orchestration.subscribeThread", payload))
+    async with asyncio.timeout(30):
+        ticket_result = await asyncio.to_thread(
+            http_json,
+            f"{http_url}/api/auth/websocket-ticket",
+            token,
+            "POST",
         )
-        while True:
-            raw_message = await asyncio.wait_for(socket.recv(), timeout=30)
-            message = json.loads(raw_message)
-            snapshot = first_stream_snapshot([message], request_id)
-            if snapshot is not None:
-                return snapshot
-            if message.get("_tag") == "Exit" and message.get("requestId") == request_id:
-                exit_value = message.get("exit", {})
-                if exit_value.get("_tag") != "Success":
-                    raise RuntimeError(f"T3 RPC failed: {safe_error_message(exit_value)}")
-                raise RuntimeError("T3 RPC stream ended before returning a thread snapshot")
+        if not isinstance(ticket_result, dict):
+            raise RuntimeError("T3 returned an invalid WebSocket ticket response")
+        ticket = ticket_result.get("ticket")
+        if not isinstance(ticket, str) or not ticket:
+            raise RuntimeError("T3 did not return a WebSocket ticket")
+
+        request_id = f"t3-thread-{uuid.uuid4()}"
+        payload: dict[str, object] = {"threadId": thread_id}
+        if turn_limit is not None:
+            payload["turnLimit"] = turn_limit
+        async with websockets.connect(websocket_url(http_url, ticket), open_timeout=15) as socket:
+            await socket.send(json.dumps({"_tag": "Ping"}))
+            await socket.send(
+                json.dumps(make_request(request_id, "orchestration.subscribeThread", payload))
+            )
+            while True:
+                raw_message = await socket.recv()
+                message = json.loads(raw_message)
+                if not isinstance(message, dict):
+                    raise RuntimeError("T3 returned an invalid thread message")
+                snapshot = first_stream_snapshot([message], request_id)
+                if snapshot is not None:
+                    return snapshot
+                if message.get("_tag") == "Exit" and message.get("requestId") == request_id:
+                    exit_value = message.get("exit", {})
+                    if exit_value.get("_tag") != "Success":
+                        raise RuntimeError(f"T3 RPC failed: {safe_error_message(exit_value)}")
+                    raise RuntimeError("T3 RPC stream ended before returning a thread snapshot")
 
 
 async def follow_thread(
@@ -771,10 +785,13 @@ async def follow_thread(
     emitted_event_ids: set[str] = set()
     emitted_events = 0
     synchronized = False
+    initial_snapshot_emitted = False
     reconnects = 0
 
     while True:
         if deadline is not None and time.monotonic() >= deadline:
+            if not synchronized:
+                raise RuntimeError("T3 thread subscription timed out before initial synchronization")
             return {
                 "kind": "follow-complete",
                 "reason": "timeout",
@@ -791,6 +808,8 @@ async def follow_thread(
                 token,
                 "POST",
             )
+            if not isinstance(ticket_result, dict):
+                raise RuntimeError("T3 returned an invalid WebSocket ticket response")
             ticket = ticket_result.get("ticket")
             if not isinstance(ticket, str) or not ticket:
                 raise RuntimeError("T3 did not return a WebSocket ticket")
@@ -814,6 +833,10 @@ async def follow_thread(
                     if message.get("_tag") == "Exit" and message.get("requestId") == request_id:
                         exit_value = message.get("exit", {})
                         if exit_value.get("_tag") == "Success":
+                            if not synchronized:
+                                raise RuntimeError(
+                                    "T3 thread subscription ended before initial synchronization"
+                                )
                             return {
                                 "kind": "follow-complete",
                                 "reason": "stream-ended",
@@ -832,11 +855,18 @@ async def follow_thread(
                         if not isinstance(item, dict):
                             continue
                         if item.get("kind") == "snapshot" and isinstance(item.get("snapshot"), dict):
+                            snapshot_thread = item["snapshot"].get("thread") or {}
+                            if snapshot_thread.get("id") != thread_id:
+                                raise RuntimeError(
+                                    f"T3 did not return the requested thread {thread_id}"
+                                )
                             synchronized = True
-                            emit_json(
-                                thread_snapshot_summary(item["snapshot"], environment),
-                                flush=True,
-                            )
+                            if not initial_snapshot_emitted:
+                                emit_json(
+                                    thread_snapshot_summary(item["snapshot"], environment),
+                                    flush=True,
+                                )
+                                initial_snapshot_emitted = True
                             if until_terminal and is_terminal_thread_snapshot(item["snapshot"]):
                                 return {
                                     "kind": "follow-complete",
@@ -898,6 +928,8 @@ async def follow_thread(
                             }
                     await socket.send(json.dumps({"_tag": "Ack", "requestId": request_id}))
         except asyncio.TimeoutError:
+            if not synchronized:
+                raise RuntimeError("T3 thread subscription timed out before initial synchronization")
             return {
                 "kind": "follow-complete",
                 "reason": "timeout",
@@ -907,7 +939,7 @@ async def follow_thread(
                 "events": emitted_events,
                 "reconnects": reconnects,
             }
-        except (OSError, websockets.ConnectionClosed) as error:
+        except (OSError, WebSocketException) as error:
             if reconnects >= retries:
                 raise RuntimeError(
                     f"T3 thread subscription disconnected after {reconnects} reconnects: {error}"
@@ -2297,7 +2329,7 @@ def main(argv: list[str] | None = None) -> int:
     store = EnvironmentStore(args.home)
     try:
         return args.handler(store, args)
-    except (OSError, ValueError, KeyError, RuntimeError, asyncio.TimeoutError) as error:
+    except Exception as error:
         print(
             json.dumps(
                 {
