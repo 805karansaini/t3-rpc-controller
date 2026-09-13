@@ -12,6 +12,7 @@ from pathlib import Path
 import websockets
 from websockets.exceptions import WebSocketException
 
+from t3_controller import __version__
 from t3_controller.output import (
     OUTPUT_SCHEMA_VERSION,
     emit_json,
@@ -1419,18 +1420,6 @@ async def wait_thread_operation(store: EnvironmentStore, args: argparse.Namespac
     while True:
         snapshot = await require_thread_snapshot(store, args.environment, args.thread_id, 100)
         thread = snapshot["thread"]
-        pending = pending_requests_from_thread(thread)
-        if pending:
-            return {
-                "ok": True,
-                "operation": "thread.wait",
-                "reason": "attention-required",
-                "environment": args.environment,
-                "threadId": args.thread_id,
-                "pending": pending,
-                "thread": thread_row(thread, args.environment),
-            }
-
         if target_message_id:
             message = next(
                 (
@@ -1449,13 +1438,31 @@ async def wait_thread_operation(store: EnvironmentStore, args: argparse.Namespac
             if isinstance(message.get("turnId"), str):
                 target_turn_id = message["turnId"]
 
+        pending = pending_requests_from_thread(thread)
+        if target_message_id:
+            pending = [
+                request
+                for request in pending
+                if target_turn_id is not None and request.get("turnId") == target_turn_id
+            ]
+        if pending:
+            return {
+                "ok": True,
+                "operation": "thread.wait",
+                "reason": "attention-required",
+                "environment": args.environment,
+                "threadId": args.thread_id,
+                "pending": pending,
+                "thread": thread_row(thread, args.environment),
+            }
+
         latest_turn = thread.get("latestTurn") or {}
         latest_turn_id = latest_turn.get("turnId")
         latest_state = latest_turn.get("state")
         matches_target = target_message_id is None or (
             target_turn_id is not None and latest_turn_id == target_turn_id
         )
-        if matches_target and latest_state and latest_state != "running":
+        if matches_target and latest_state in {"completed", "interrupted", "error"}:
             ok = latest_state == "completed"
             return {
                 "ok": ok,
@@ -2061,6 +2068,7 @@ class JsonArgumentParser(argparse.ArgumentParser):
 
 def build_parser() -> argparse.ArgumentParser:
     parser = JsonArgumentParser(description="Native T3 HTTP/WebSocket RPC controller")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("--home", type=Path, default=DEFAULT_HOME, help="controller state directory")
     subparsers = parser.add_subparsers(dest="command", required=True)
 

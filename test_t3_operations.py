@@ -184,7 +184,13 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
         old = {
             "id": "t1",
             "messages": [{"id": message_id, "role": "user", "text": "Work"}],
-            "activities": [],
+            "activities": [
+                {
+                    "kind": "approval.requested",
+                    "turnId": "old-turn",
+                    "payload": {"requestId": "old-approval"},
+                }
+            ],
             "latestTurn": {"turnId": "old-turn", "state": "completed"},
         }
         running = {
@@ -227,7 +233,11 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
             ],
             "latestTurn": {"turnId": "target-turn", "state": "running"},
             "activities": [
-                {"kind": "approval.requested", "payload": {"requestId": "approval-1"}}
+                {
+                    "kind": "approval.requested",
+                    "turnId": "target-turn",
+                    "payload": {"requestId": "approval-1"},
+                }
             ],
         }
         command_args = args(

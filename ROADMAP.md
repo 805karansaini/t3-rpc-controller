@@ -74,6 +74,18 @@ The work is complete when an agent can use documented commands to identify a mac
 - [x] Run the full checks and live read-only smoke tests on both machines.
 - [x] Update the README and handoff record with the final command reference and verified limitations.
 
+### 8. Reliability follow-up
+
+- [x] Keep unexpected network and protocol failures in the JSON error contract.
+- [x] Bound requests by total elapsed time and require initial monitor synchronization.
+- [x] Emit one initial snapshot across monitor reconnects.
+- [x] Add stable retry identifiers and reconcile uncertain task creation or submission.
+- [x] Add a task-aware wait command that stops for completion, failure, timeout, approval, or input.
+- [x] Add a combined submit-and-wait command for the normal agent workflow.
+- [x] Version every JSON record and distinguish live compatibility checks from declared support.
+- [x] Pin the tested dependency and run setup, tests, and smoke checks through the project environment.
+- [x] Separate state, output, and network code from the controller workflow.
+
 ## Commit rhythm
 
 Changes are committed after each two or three related capabilities. Each commit must pass `make check`. Commits that touch the live protocol also require a read-only live smoke test before they are considered complete.

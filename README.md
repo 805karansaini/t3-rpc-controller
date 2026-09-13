@@ -7,7 +7,11 @@ A self-contained controller for reading and orchestrating multiple T3 Code serve
 ```text
 /Users/karansaini/Projects/t3-rpc-controller/
 ├── t3_rpc_controller.py
+├── t3_controller/           # state, output, and network modules
 ├── test_t3_rpc_controller.py
+├── test_t3_operations.py
+├── test_t3_transport.py
+├── pyproject.toml
 ├── requirements.txt
 ├── README.md
 ├── .gitignore
@@ -66,6 +70,7 @@ Create the project environment and install the `t3ctl` command:
 cd /Users/karansaini/Projects/t3-rpc-controller
 make setup
 .venv/bin/t3ctl --help
+.venv/bin/t3ctl --version
 ```
 
 The examples below keep the original `./t3_rpc_controller.py` spelling for convenience. The repeatable installed form is `.venv/bin/t3ctl`.
