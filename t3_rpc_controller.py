@@ -429,6 +429,38 @@ def build_user_input_dismiss_command(thread_id: str, request_id: str) -> dict:
     }
 
 
+def dry_run_result(environment: str, command: dict) -> dict:
+    visible_fields = (
+        "threadId",
+        "projectId",
+        "title",
+        "modelSelection",
+        "runtimeMode",
+        "interactionMode",
+        "branch",
+        "worktreePath",
+        "requestId",
+        "decision",
+        "snoozedUntil",
+        "reason",
+    )
+    planned = {key: command[key] for key in visible_fields if key in command}
+    message = command.get("message")
+    if isinstance(message, dict):
+        planned["messageId"] = message.get("messageId")
+        planned["messageCharacters"] = len(str(message.get("text", "")))
+    answers = command.get("answers")
+    if isinstance(answers, dict):
+        planned["answerQuestionIds"] = sorted(answers)
+    return {
+        "ok": True,
+        "dryRun": True,
+        "environment": environment,
+        "operation": command.get("type"),
+        "planned": planned,
+    }
+
+
 def thread_row(thread: dict, environment: str) -> dict:
     return {
         "environment": environment,
@@ -1132,6 +1164,8 @@ async def create_thread_operation(store: EnvironmentStore, args: argparse.Namesp
         branch=args.branch,
         worktree_path=args.worktree_path,
     )
+    if args.dry_run:
+        return dry_run_result(args.environment, command)
     receipt = await dispatch_command(store, args.environment, command)
     confirmed = await wait_for_shell_thread(
         store,
@@ -1186,6 +1220,8 @@ async def send_thread_operation(store: EnvironmentStore, args: argparse.Namespac
         interaction_mode=args.interaction_mode or thread.get("interactionMode") or "default",
         selection=selection,
     )
+    if args.dry_run:
+        return dry_run_result(args.environment, command)
     receipt = await dispatch_command(store, args.environment, command)
     message_id = command["message"]["messageId"]
 
@@ -1215,6 +1251,8 @@ async def set_thread_model_operation(store: EnvironmentStore, args: argparse.Nam
     await validate_model(store, args.environment, args.provider, args.model)
     selection = model_selection(args.provider, args.model)
     command = build_thread_model_command(args.thread_id, selection)
+    if args.dry_run:
+        return dry_run_result(args.environment, command)
     receipt = await dispatch_command(store, args.environment, command)
     confirmed = await wait_for_shell_thread(
         store,
@@ -1237,6 +1275,8 @@ async def rename_thread_operation(store: EnvironmentStore, args: argparse.Namesp
     if not title:
         raise ValueError("thread title cannot be empty")
     command = build_thread_rename_command(args.thread_id, title)
+    if args.dry_run:
+        return dry_run_result(args.environment, command)
     receipt = await dispatch_command(store, args.environment, command)
     confirmed = await wait_for_shell_thread(
         store,
@@ -1269,6 +1309,8 @@ async def archive_thread_operation(
         args.thread_id,
         "archive" if archive else "unarchive",
     )
+    if args.dry_run:
+        return dry_run_result(args.environment, command)
     receipt = await dispatch_command(store, args.environment, command)
     deadline = time.monotonic() + 10
     while True:
@@ -1313,6 +1355,8 @@ async def thread_state_operation(
     elif action in {"unsnooze", "unsettle"}:
         extra["reason"] = "user"
     command = build_thread_lifecycle_command(args.thread_id, action, **extra)
+    if args.dry_run:
+        return dry_run_result(args.environment, command)
     receipt = await dispatch_command(store, args.environment, command)
     deadline = time.monotonic() + 10
     while True:
@@ -1340,6 +1384,8 @@ async def delete_thread_operation(store: EnvironmentStore, args: argparse.Namesp
     if (before.get("latestTurn") or {}).get("state") == "running":
         raise ValueError("refusing to delete a thread with a running turn; stop it first")
     command = build_thread_lifecycle_command(args.thread_id, "delete")
+    if args.dry_run:
+        return dry_run_result(args.environment, command)
     receipt = await dispatch_command(store, args.environment, command)
     deadline = time.monotonic() + 10
     while True:
@@ -1387,6 +1433,8 @@ async def stop_thread_operation(store: EnvironmentStore, args: argparse.Namespac
     if not args.session and (thread.get("latestTurn") or {}).get("state") != "running":
         raise ValueError(f"thread {args.thread_id} has no running turn to interrupt")
     command = build_thread_stop_command(args.thread_id, turn_id, args.session)
+    if args.dry_run:
+        return dry_run_result(args.environment, command)
     receipt = await dispatch_command(store, args.environment, command)
     if args.session:
         predicate = lambda current: (current.get("session") or {}).get("status") in {
@@ -1447,6 +1495,8 @@ async def approval_response_operation(store: EnvironmentStore, args: argparse.Na
     before = await require_thread_snapshot(store, args.environment, args.thread_id, 20)
     require_pending_request(before["thread"], args.request_id, "approval.requested")
     command = build_approval_response_command(args.thread_id, args.request_id, args.decision)
+    if args.dry_run:
+        return dry_run_result(args.environment, command)
     receipt = await dispatch_command(store, args.environment, command)
     confirmed = await wait_for_request_cleared(
         store,
@@ -1497,6 +1547,8 @@ async def user_input_response_operation(
         command = build_user_input_dismiss_command(args.thread_id, args.request_id)
     else:
         command = build_user_input_response_command(args.thread_id, args.request_id, answers or {})
+    if args.dry_run:
+        return dry_run_result(args.environment, command)
     receipt = await dispatch_command(store, args.environment, command)
     confirmed = await wait_for_request_cleared(
         store,
@@ -1565,6 +1617,59 @@ async def check_many_environments(store: EnvironmentStore, names: list[str]) -> 
     return list(await asyncio.gather(*(check_environment(store, name) for name in names)))
 
 
+async def check_compatibility(store: EnvironmentStore, name: str) -> dict:
+    row: dict[str, object] = {
+        "environment": name,
+        "compatible": False,
+        "checks": {
+            "authentication": False,
+            "serverProbe": False,
+            "activeShell": False,
+            "archivedShell": False,
+            "providerConfig": False,
+        },
+    }
+    try:
+        url, token = store.load(name)
+        row["url"] = url
+        session = await asyncio.to_thread(http_json, f"{url}/api/auth/session", token)
+        if session.get("authenticated") is not True:
+            raise RuntimeError("stored T3 session is not authenticated")
+        row["checks"]["authentication"] = True
+        await rpc_call(url, token, "server.probe", {})
+        row["checks"]["serverProbe"] = True
+        active = await fetch_shell_snapshot(url, token)
+        if not isinstance(active.get("threads"), list) or not isinstance(active.get("projects"), list):
+            raise RuntimeError("T3 active shell snapshot has an incompatible shape")
+        row["checks"]["activeShell"] = True
+        archived = await fetch_archived_shell_snapshot(url, token)
+        if not isinstance(archived.get("threads"), list):
+            raise RuntimeError("T3 archived shell snapshot has an incompatible shape")
+        row["checks"]["archivedShell"] = True
+        config = await rpc_call(url, token, "server.getConfig", {})
+        if not isinstance(config, dict) or not isinstance(config.get("providers"), list):
+            raise RuntimeError("T3 provider configuration has an incompatible shape")
+        row["checks"]["providerConfig"] = True
+        row["authMethods"] = list((session.get("auth") or {}).get("sessionMethods", []))
+        row["providerInstances"] = len(config["providers"])
+        row["compatible"] = True
+        row["controllerCapabilities"] = [
+            "thread-discovery",
+            "thread-streaming",
+            "task-dispatch",
+            "approvals-and-input",
+            "thread-lifecycle",
+            "history-and-diffs",
+        ]
+    except Exception as error:
+        row["error"] = safe_error_message(error)
+    return row
+
+
+async def check_many_compatibility(store: EnvironmentStore, names: list[str]) -> list[dict]:
+    return list(await asyncio.gather(*(check_compatibility(store, name) for name in names)))
+
+
 def configure_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
     if args.token_file:
         token = Path(args.token_file).expanduser().read_text().strip()
@@ -1598,6 +1703,21 @@ def pair_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
 def remove_environment_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
     if args.confirm_name != args.name:
         raise ValueError("--confirm-name must exactly match the environment name")
+    if args.name not in store.names():
+        raise KeyError(f"unknown environment: {args.name}")
+    if args.dry_run:
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "dryRun": True,
+                    "operation": "environment.remove",
+                    "planned": {"environment": args.name, "recoverableBackup": True},
+                },
+                indent=2,
+            )
+        )
+        return 0
     backup = store.remove(args.name)
     print(
         json.dumps(
@@ -1634,6 +1754,16 @@ def health_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
         raise RuntimeError("no environments configured")
     rows = asyncio.run(check_many_environments(store, names))
     ok = all(row.get("authenticated") is True and row.get("rpc") is True for row in rows)
+    print(json.dumps({"ok": ok, "environments": rows}, indent=2))
+    return 0 if ok else 1
+
+
+def compatibility_command(store: EnvironmentStore, args: argparse.Namespace) -> int:
+    names = store.names() if not args.environment or args.environment == ["all"] else args.environment
+    if not names:
+        raise RuntimeError("no environments configured")
+    rows = asyncio.run(check_many_compatibility(store, names))
+    ok = all(row.get("compatible") is True for row in rows)
     print(json.dumps({"ok": ok, "environments": rows}, indent=2))
     return 0 if ok else 1
 
@@ -1884,6 +2014,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--home", type=Path, default=DEFAULT_HOME, help="controller state directory")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    def add_dry_run(command_parser: argparse.ArgumentParser) -> None:
+        command_parser.add_argument("--dry-run", action="store_true", help="validate and preview without changing T3")
+
     configure = subparsers.add_parser("configure", help="save a named T3 bearer environment")
     configure.add_argument("name")
     configure.add_argument("--url", required=True)
@@ -1898,6 +2031,7 @@ def build_parser() -> argparse.ArgumentParser:
     remove_environment = subparsers.add_parser("remove-environment", help="remove and locally back up one environment")
     remove_environment.add_argument("name")
     remove_environment.add_argument("--confirm-name", required=True, help="must exactly repeat NAME")
+    add_dry_run(remove_environment)
     remove_environment.set_defaults(handler=remove_environment_command)
 
     environments = subparsers.add_parser("environments", help="list configured environments")
@@ -1908,6 +2042,10 @@ def build_parser() -> argparse.ArgumentParser:
     health = subparsers.add_parser("health", help="check authentication and RPC access")
     health.add_argument("--environment", action="append")
     health.set_defaults(handler=health_command)
+
+    compatibility = subparsers.add_parser("compatibility", help="check the T3 protocol features required by this controller")
+    compatibility.add_argument("--environment", action="append")
+    compatibility.set_defaults(handler=compatibility_command)
 
     projects = subparsers.add_parser("projects", help="list T3 projects over native RPC")
     projects.add_argument("--environment", action="append")
@@ -1955,6 +2093,7 @@ def build_parser() -> argparse.ArgumentParser:
     thread_create.add_argument("--interaction-mode", choices=["default", "plan"], default="default")
     thread_create.add_argument("--branch")
     thread_create.add_argument("--worktree-path")
+    add_dry_run(thread_create)
     thread_create.set_defaults(handler=thread_create_command)
 
     thread_send = thread_commands.add_parser("send", help="send a task to an existing thread")
@@ -1969,6 +2108,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["approval-required", "auto-accept-edits", "auto", "full-access"],
     )
     thread_send.add_argument("--interaction-mode", choices=["default", "plan"])
+    add_dry_run(thread_send)
     thread_send.set_defaults(handler=thread_send_command)
 
     thread_model = thread_commands.add_parser("model", help="change the provider and model for a thread")
@@ -1976,22 +2116,26 @@ def build_parser() -> argparse.ArgumentParser:
     thread_model.add_argument("thread_id")
     thread_model.add_argument("--provider", required=True)
     thread_model.add_argument("--model", required=True)
+    add_dry_run(thread_model)
     thread_model.set_defaults(handler=thread_model_command)
 
     thread_rename = thread_commands.add_parser("rename", help="rename a thread and verify its title")
     thread_rename.add_argument("environment")
     thread_rename.add_argument("thread_id")
     thread_rename.add_argument("title")
+    add_dry_run(thread_rename)
     thread_rename.set_defaults(handler=thread_rename_command)
 
     thread_archive = thread_commands.add_parser("archive", help="archive a thread")
     thread_archive.add_argument("environment")
     thread_archive.add_argument("thread_id")
+    add_dry_run(thread_archive)
     thread_archive.set_defaults(handler=thread_archive_command)
 
     thread_unarchive = thread_commands.add_parser("unarchive", help="restore an archived thread")
     thread_unarchive.add_argument("environment")
     thread_unarchive.add_argument("thread_id")
+    add_dry_run(thread_unarchive)
     thread_unarchive.set_defaults(handler=thread_unarchive_command)
 
     for action, help_text in (
@@ -2004,12 +2148,14 @@ def build_parser() -> argparse.ArgumentParser:
         state_parser = thread_commands.add_parser(action, help=help_text)
         state_parser.add_argument("environment")
         state_parser.add_argument("thread_id")
+        add_dry_run(state_parser)
         state_parser.set_defaults(handler=thread_state_command)
 
     thread_snooze = thread_commands.add_parser("snooze", help="snooze a thread until a future time")
     thread_snooze.add_argument("environment")
     thread_snooze.add_argument("thread_id")
     thread_snooze.add_argument("--until", required=True, help="ISO 8601 date and time with timezone")
+    add_dry_run(thread_snooze)
     thread_snooze.set_defaults(handler=thread_state_command)
 
     thread_delete = thread_commands.add_parser("delete", help="permanently delete one stopped thread")
@@ -2020,6 +2166,7 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="must exactly repeat THREAD_ID",
     )
+    add_dry_run(thread_delete)
     thread_delete.set_defaults(handler=thread_delete_command)
 
     thread_history = thread_commands.add_parser("history", help="read messages, activities, checkpoints, and plans")
@@ -2046,6 +2193,7 @@ def build_parser() -> argparse.ArgumentParser:
     thread_stop.add_argument("environment")
     thread_stop.add_argument("thread_id")
     thread_stop.add_argument("--session", action="store_true", help="stop the provider session instead of only the active turn")
+    add_dry_run(thread_stop)
     thread_stop.set_defaults(handler=thread_stop_command)
 
     thread_approve = thread_commands.add_parser("approve", help="answer one exact pending approval")
@@ -2056,6 +2204,7 @@ def build_parser() -> argparse.ArgumentParser:
         "decision",
         choices=["accept", "acceptForSession", "acceptAlways", "decline", "cancel"],
     )
+    add_dry_run(thread_approve)
     thread_approve.set_defaults(handler=thread_approve_command)
 
     thread_answer = thread_commands.add_parser("answer", help="answer one exact pending user-input request")
@@ -2064,12 +2213,14 @@ def build_parser() -> argparse.ArgumentParser:
     thread_answer.add_argument("request_id")
     thread_answer.add_argument("--answers-json")
     thread_answer.add_argument("--answers-file", help="read a JSON object from a file, or use - for standard input")
+    add_dry_run(thread_answer)
     thread_answer.set_defaults(handler=thread_answer_command)
 
     thread_dismiss = thread_commands.add_parser("dismiss-input", help="dismiss an asynchronous message-mode question")
     thread_dismiss.add_argument("environment")
     thread_dismiss.add_argument("thread_id")
     thread_dismiss.add_argument("request_id")
+    add_dry_run(thread_dismiss)
     thread_dismiss.set_defaults(handler=thread_dismiss_input_command)
 
     search = subparsers.add_parser("search", help="search user and assistant thread messages")

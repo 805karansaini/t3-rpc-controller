@@ -67,9 +67,9 @@ The work is complete when an agent can use documented commands to identify a mac
 ### 7. Make it dependable for autonomous agents
 
 - [x] Use consistent JSON envelopes, error categories, and exit codes.
-- [ ] Add `--dry-run` for state-changing commands where practical.
+- [x] Add `--dry-run` for state-changing commands where practical.
 - [x] Redact credentials, tickets, pairing values, and sensitive server errors.
-- [ ] Add compatibility diagnostics for T3 Nightly protocol changes.
+- [x] Add compatibility diagnostics for T3 Nightly protocol changes.
 - [ ] Add representative integration tests with a fake T3 server.
 - [ ] Run the full checks and live read-only smoke tests on both machines.
 - [ ] Update the README and handoff record with the final command reference and verified limitations.

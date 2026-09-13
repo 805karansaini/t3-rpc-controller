@@ -21,6 +21,7 @@ from t3_rpc_controller import (
     build_user_input_dismiss_command,
     build_user_input_response_command,
     build_parser,
+    dry_run_result,
     filter_thread_rows,
     first_shell_snapshot,
     first_stream_snapshot,
@@ -387,6 +388,23 @@ class RpcProtocolTests(unittest.TestCase):
         self.assertEqual(redacted["accessToken"], "[REDACTED]")
         self.assertNotIn("abc123", redacted["message"])
         self.assertNotIn("ticket123", redacted["message"])
+
+    def test_dry_run_hides_task_and_answer_contents(self):
+        command = build_turn_start_command(
+            thread_id="t1",
+            text="private task text",
+            runtime_mode="approval-required",
+            interaction_mode="default",
+        )
+        preview = dry_run_result("mac", command)
+        self.assertEqual(preview["planned"]["messageCharacters"], 17)
+        self.assertNotIn("private task text", json.dumps(preview))
+        answer_preview = dry_run_result(
+            "mac",
+            build_user_input_response_command("t1", "q1", {"color": "private answer"}),
+        )
+        self.assertEqual(answer_preview["planned"]["answerQuestionIds"], ["color"])
+        self.assertNotIn("private answer", json.dumps(answer_preview))
 
     def test_argument_errors_are_json_and_reject_negative_limits(self):
         parser = build_parser()

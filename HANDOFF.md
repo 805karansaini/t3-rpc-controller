@@ -42,7 +42,7 @@ Credential values are never recorded here. Local connection state lives under `.
 | Monitoring | Complete | `thread follow` plus `thread pending` | Snapshot, events, timeout, resume, deduplication, and pending requests covered |
 | Task control | Complete | Live create, model change, task dispatch, completion, stop, and approval response verified | User-question response is schema- and unit-verified; the current Codex mode would not emit a live question request |
 | Lifecycle | Complete | Live rename, archive, pin, snooze, settle, history, diff, and guarded deletion verified | Three disposable build-test threads were removed and confirmed absent |
-| Agent hardening | In progress | JSON success/failure envelopes, exit categories, argument bounds, and secret redaction covered by tests | Dry-run, compatibility diagnostics, and fake-server tests remain |
+| Agent hardening | In progress | JSON envelopes, argument bounds, redaction, live no-change previews, and compatibility checks on both machines | Fake-server transport tests and final smoke remain |
 
 ## Resume instructions
 

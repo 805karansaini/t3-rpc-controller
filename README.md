@@ -95,6 +95,13 @@ Check authentication and native RPC access on every configured machine:
 ./t3_rpc_controller.py health --environment mac
 ```
 
+Check that each machine still supports the authenticated shell, archived records, provider discovery, and other protocol surfaces required by this controller:
+
+```bash
+./t3_rpc_controller.py compatibility
+./t3_rpc_controller.py compatibility --environment i7
+```
+
 Multi-machine reads include successful results and an `errors` object when one target is unavailable. The command exits with status 1 if any requested target failed, while preserving data returned by healthy targets.
 
 List recent thread summaries or narrow them to one machine, project, turn state, or pending action:
@@ -281,6 +288,8 @@ If a stored credential expires, run `pair` again with the same environment name;
 Removal takes the environment out of active configuration and moves its local metadata and credential into a protected `.state/removed/` backup, so an accidental removal is recoverable on this machine.
 
 All successful commands return JSON. Operational failures also return JSON on standard error with a stable category and exit status 1; invalid command usage returns category `usage` and exit status 2. Server error bodies, bearer values, WebSocket tickets, pairing values, and other credential-like fields are not included in errors.
+
+Every thread-changing command, plus environment removal, accepts `--dry-run`. The controller still validates the named environment, project, thread, provider, model, current state, and confirmation values, but does not dispatch the change. Task text and answer contents are replaced by lengths or question IDs in the preview.
 
 ## Guidance for another agent
 
