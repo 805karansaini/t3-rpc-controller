@@ -6,11 +6,12 @@ build-backend = "setuptools.build_meta"
 name = "t3-rpc-controller"
 version = "0.2.4"
 description = "Local agent-facing controller for T3 Code"
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["websockets==16.1.1"]
 
 [project.scripts]
-t3ctl = "t3_rpc_controller:main"
+t3ctl = "t3_controller.cli:main"
 
 [tool.setuptools]
 py-modules = ["t3_rpc_controller"]

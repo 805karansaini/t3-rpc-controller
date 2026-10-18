@@ -15,3 +15,7 @@ htmlcov/
 # Local outputs
 *.log
 *.tmp
+
+# Package build outputs
+build/
+dist/

@@ -24,7 +24,7 @@ test: setup
 	$(VENV_PYTHON) -m unittest -v
 
 check: setup
-	$(VENV_PYTHON) -m compileall -q t3_controller t3_rpc_controller.py test_t3_rpc_controller.py test_t3_operations.py test_t3_transport.py
+	$(VENV_PYTHON) -m compileall -q t3_controller t3_rpc_controller.py test_t3_rpc_controller.py test_t3_operations.py test_t3_transport.py test_t3_cli.py
 	$(VENV_PYTHON) -m pip check
 	$(MAKE) test
 
@@ -36,7 +36,6 @@ live-smoke: setup
 	$(VENV)/bin/t3ctl health >/dev/null
 	$(VENV)/bin/t3ctl compatibility >/dev/null
 	$(VENV)/bin/t3ctl projects >/dev/null
-	$(VENV)/bin/t3ctl threads --environment mac --limit 1 >/dev/null
-	$(VENV)/bin/t3ctl threads --environment i7 --limit 1 >/dev/null
+	$(VENV)/bin/t3ctl threads --limit 1 >/dev/null
 	$(VENV)/bin/t3ctl providers >/dev/null
-	@echo "Mac and i7 read-only smoke checks passed"
+	@echo "Configured-server read-only smoke checks passed"

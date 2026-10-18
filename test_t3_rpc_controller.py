@@ -1,62 +1,61 @@
-import json
 import io
+import json
 import os
 import stat
 import tempfile
 import unittest
-from pathlib import Path
 from contextlib import redirect_stderr, redirect_stdout
-from unittest.mock import AsyncMock, patch
-from websockets.exceptions import WebSocketException
-
-from t3_rpc_controller import (
-    DEFAULT_HOME,
-    EnvironmentStore,
-    bearer_token_from_bootstrap,
-    bearer_token_from_oauth,
+from pathlib import Path
+from t3_controller.auth import bearer_token_from_bootstrap, bearer_token_from_oauth, oauth_exchange_payload
+from t3_controller.cli import (
+    build_parser,
+    main,
+    read_json_object,
+    read_pairing_credential,
+    read_prompt,
+)
+from t3_controller.domain import (
+    build_approval_response_command,
     build_thread_create_command,
     build_thread_lifecycle_command,
     build_thread_model_command,
     build_thread_rename_command,
     build_thread_stop_command,
     build_turn_start_command,
-    build_approval_response_command,
     build_user_input_dismiss_command,
     build_user_input_response_command,
-    build_parser,
-    check_compatibility,
     dry_run_result,
-    emit_json,
     filter_thread_rows,
-    first_shell_snapshot,
-    first_stream_snapshot,
-    make_request,
-    merge_environment_projects,
-    normalize_url,
-    normalize_future_datetime,
-    oauth_exchange_payload,
-    provider_row,
-    project_rows_from_snapshot,
-    read_pairing_credential,
-    safe_environment_config,
-    safe_model_row,
     is_terminal_thread_event,
     is_terminal_thread_snapshot,
-    thread_snapshot_summary,
-    validate_uuid,
+    merge_environment_projects,
     model_selection,
+    normalize_future_datetime,
     pending_requests_from_thread,
+    project_rows_from_snapshot,
+    provider_row,
     request_response_outcome,
     require_codex_provider,
-    read_prompt,
-    read_json_object,
-    redact_sensitive,
-    require_pending_request,
-    list_many_projects,
-    main,
+    safe_model_row,
+    thread_snapshot_summary,
+    validate_uuid,
 )
-from t3_controller.output import UncertainDispatchError
-from t3_controller.state import default_home
+from t3_controller.operations import (
+    check_compatibility,
+    list_many_projects,
+    require_pending_request,
+    safe_environment_config,
+)
+from t3_controller.output import UncertainDispatchError, emit_json, redact_sensitive
+from t3_controller.state import (
+    DEFAULT_HOME,
+    EnvironmentStore,
+    default_home,
+    normalize_url,
+)
+from t3_controller.transport import first_shell_snapshot, first_stream_snapshot, make_request
+from unittest.mock import AsyncMock, patch
+from websockets.exceptions import WebSocketException
 
 
 class EnvironmentStoreTests(unittest.TestCase):
@@ -72,7 +71,7 @@ class EnvironmentStoreTests(unittest.TestCase):
         retry = {"messageId": "message-1", "commandId": "command-1"}
         with (
             patch(
-                "t3_rpc_controller.thread_show_command",
+                "t3_controller.cli.thread_show_command",
                 side_effect=UncertainDispatchError("confirmation failed", retry),
             ),
             redirect_stderr(error_output),
@@ -97,7 +96,7 @@ class EnvironmentStoreTests(unittest.TestCase):
         with (
             patch.object(EnvironmentStore, "load", return_value=("http://fake", "fake-token")),
             patch(
-                "t3_rpc_controller.fetch_thread_snapshot",
+                "t3_controller.cli.fetch_thread_snapshot",
                 new=AsyncMock(side_effect=WebSocketException("bad handshake")),
             ),
             redirect_stderr(error_output),
@@ -573,7 +572,7 @@ class MultiEnvironmentTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(store, "load", return_value=("http://fake", "fake-token")),
             patch(
-                "t3_rpc_controller.asyncio.to_thread",
+                "t3_controller.operations.asyncio.to_thread",
                 new=AsyncMock(
                     return_value={
                         "authenticated": True,
@@ -582,16 +581,16 @@ class MultiEnvironmentTests(unittest.IsolatedAsyncioTestCase):
                 ),
             ),
             patch(
-                "t3_rpc_controller.rpc_call",
+                "t3_controller.operations.rpc_call",
                 new=AsyncMock(side_effect=[{}, {"providers": []}]),
             ),
-            patch("t3_rpc_controller.fetch_shell_snapshot", new=AsyncMock(return_value=active)),
+            patch("t3_controller.operations.fetch_shell_snapshot", new=AsyncMock(return_value=active)),
             patch(
-                "t3_rpc_controller.fetch_thread_snapshot",
+                "t3_controller.operations.fetch_thread_snapshot",
                 new=AsyncMock(return_value={"thread": {"id": "t1"}}),
             ),
             patch(
-                "t3_rpc_controller.fetch_archived_shell_snapshot",
+                "t3_controller.operations.fetch_archived_shell_snapshot",
                 new=AsyncMock(return_value={"threads": []}),
             ),
         ):
@@ -609,7 +608,7 @@ class MultiEnvironmentTests(unittest.IsolatedAsyncioTestCase):
                 raise RuntimeError("offline")
             return [{"id": "p1", "title": "Repo", "workspaceRoot": "/repo"}]
 
-        with patch("t3_rpc_controller.list_projects", new=AsyncMock(side_effect=fake_list)):
+        with patch("t3_controller.operations.list_projects", new=AsyncMock(side_effect=fake_list)):
             projects, errors = await list_many_projects(EnvironmentStore(Path("/unused")), ["mac", "i7"])
 
         self.assertEqual(projects["mac"][0]["id"], "p1")

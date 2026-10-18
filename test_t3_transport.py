@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 from websockets.asyncio.server import serve
 
-from t3_rpc_controller import fetch_shell_snapshot, fetch_thread_snapshot, http_json, rpc_call
+from t3_controller.transport import fetch_shell_snapshot, fetch_thread_snapshot, http_json, rpc_call
 
 
 class FakeT3Server:

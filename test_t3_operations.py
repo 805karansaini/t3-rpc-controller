@@ -5,14 +5,12 @@ import json
 import time
 import unittest
 from contextlib import redirect_stdout
-from unittest.mock import AsyncMock, patch
-
-from t3_rpc_controller import (
+from t3_controller.monitoring import follow_thread
+from t3_controller.operations import (
     approval_response_operation,
     archive_thread_operation,
     create_thread_operation,
     delete_thread_operation,
-    follow_thread,
     rename_thread_operation,
     run_thread_operation,
     send_thread_operation,
@@ -20,10 +18,11 @@ from t3_rpc_controller import (
     stop_thread_operation,
     thread_state_operation,
     user_input_response_operation,
-    wait_thread_operation,
     wait_for_request_cleared,
+    wait_thread_operation,
 )
 from t3_controller.output import UncertainDispatchError
+from unittest.mock import AsyncMock, patch
 
 
 def args(**values):
@@ -77,12 +76,12 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
         output = io.StringIO()
         with (
             patch(
-                "t3_rpc_controller.fetch_thread_snapshot",
+                "t3_controller.monitoring.fetch_thread_snapshot",
                 new=AsyncMock(return_value=snapshot["snapshot"]),
             ),
-            patch("t3_rpc_controller.asyncio.to_thread", new=AsyncMock(return_value={"ticket": "t"})),
-            patch("t3_rpc_controller.websockets.connect", side_effect=[first, second]) as connect,
-            patch("t3_rpc_controller.asyncio.sleep", new=AsyncMock()),
+            patch("t3_controller.monitoring.asyncio.to_thread", new=AsyncMock(return_value={"ticket": "t"})),
+            patch("t3_controller.monitoring.websockets.connect", side_effect=[first, second]) as connect,
+            patch("t3_controller.monitoring.asyncio.sleep", new=AsyncMock()),
             redirect_stdout(output),
         ):
             result = await follow_thread(
@@ -165,11 +164,11 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
         output = io.StringIO()
         with (
             patch(
-                "t3_rpc_controller.fetch_thread_snapshot",
+                "t3_controller.monitoring.fetch_thread_snapshot",
                 new=AsyncMock(return_value=before),
             ),
-            patch("t3_rpc_controller.asyncio.to_thread", new=AsyncMock(return_value={"ticket": "t"})),
-            patch("t3_rpc_controller.websockets.connect", return_value=Socket()),
+            patch("t3_controller.monitoring.asyncio.to_thread", new=AsyncMock(return_value={"ticket": "t"})),
+            patch("t3_controller.monitoring.websockets.connect", return_value=Socket()),
             redirect_stdout(output),
         ):
             result = await follow_thread(
@@ -207,10 +206,10 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
         }
         with (
             patch(
-                "t3_rpc_controller.fetch_thread_snapshot",
+                "t3_controller.monitoring.fetch_thread_snapshot",
                 new=AsyncMock(return_value=terminal),
             ),
-            patch("t3_rpc_controller.websockets.connect") as connect,
+            patch("t3_controller.monitoring.websockets.connect") as connect,
             redirect_stdout(io.StringIO()),
         ):
             result = await follow_thread(
@@ -248,11 +247,11 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "t3_rpc_controller.fetch_thread_snapshot",
+                "t3_controller.monitoring.fetch_thread_snapshot",
                 new=AsyncMock(side_effect=asyncio.TimeoutError()),
             ),
-            patch("t3_rpc_controller.asyncio.to_thread", new=AsyncMock(return_value={"ticket": "t"})),
-            patch("t3_rpc_controller.websockets.connect", return_value=Socket()),
+            patch("t3_controller.monitoring.asyncio.to_thread", new=AsyncMock(return_value={"ticket": "t"})),
+            patch("t3_controller.monitoring.websockets.connect", return_value=Socket()),
         ):
             with self.assertRaisesRegex(RuntimeError, "before initial synchronization"):
                 await follow_thread(
@@ -276,11 +275,11 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
         snapshot = {"thread": {"id": "t1", "messages": [], "activities": []}}
         with (
             patch(
-                "t3_rpc_controller.fetch_thread_snapshot",
+                "t3_controller.monitoring.fetch_thread_snapshot",
                 new=AsyncMock(return_value=snapshot),
             ),
-            patch("t3_rpc_controller.asyncio.to_thread", new=AsyncMock(return_value={"ticket": "t"})),
-            patch("t3_rpc_controller.websockets.connect", side_effect=OSError("offline")),
+            patch("t3_controller.monitoring.asyncio.to_thread", new=AsyncMock(return_value={"ticket": "t"})),
+            patch("t3_controller.monitoring.websockets.connect", side_effect=OSError("offline")),
             redirect_stdout(io.StringIO()),
         ):
             started = time.monotonic()
@@ -322,14 +321,14 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
             "worktreePath": "/tmp/worktree",
         }
         with (
-            patch("t3_rpc_controller.uuid.uuid4", return_value="thread-1"),
-            patch("t3_rpc_controller.validate_project_and_model", new=AsyncMock()),
+            patch("t3_controller.operations.uuid.uuid4", return_value="thread-1"),
+            patch("t3_controller.operations.validate_project_and_model", new=AsyncMock()),
             patch(
-                "t3_rpc_controller.dispatch_command",
+                "t3_controller.operations.dispatch_command",
                 new=AsyncMock(return_value={"sequence": 1}),
             ),
             patch(
-                "t3_rpc_controller.wait_for_shell_thread",
+                "t3_controller.operations.wait_for_shell_thread",
                 new=AsyncMock(return_value=exact),
             ) as wait,
         ):
@@ -374,12 +373,12 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
         )
         with (
             patch(
-                "t3_rpc_controller.require_thread_snapshot",
+                "t3_controller.operations.require_thread_snapshot",
                 new=AsyncMock(
                     side_effect=[{"thread": old}, {"thread": running}, {"thread": completed}]
                 ),
             ),
-            patch("t3_rpc_controller.asyncio.sleep", new=AsyncMock()),
+            patch("t3_controller.operations.asyncio.sleep", new=AsyncMock()),
         ):
             result = await wait_thread_operation(object(), command_args)
         self.assertTrue(result["ok"])
@@ -409,7 +408,7 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
             poll_interval=0.01,
         )
         with patch(
-            "t3_rpc_controller.require_thread_snapshot",
+            "t3_controller.operations.require_thread_snapshot",
             new=AsyncMock(return_value={"thread": thread}),
         ):
             result = await wait_thread_operation(object(), command_args)
@@ -435,7 +434,7 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
             poll_interval=0.01,
         )
         with patch(
-            "t3_rpc_controller.require_thread_snapshot",
+            "t3_controller.operations.require_thread_snapshot",
             new=AsyncMock(return_value={"thread": thread}),
         ):
             result = await wait_thread_operation(object(), command_args)
@@ -462,7 +461,7 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
             poll_interval=0.01,
         )
         with patch(
-            "t3_rpc_controller.require_thread_snapshot",
+            "t3_controller.operations.require_thread_snapshot",
             new=AsyncMock(return_value={"thread": thread}),
         ):
             result = await wait_thread_operation(object(), command_args)
@@ -481,7 +480,7 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
             poll_interval=0.01,
         )
         with patch(
-            "t3_rpc_controller.require_thread_snapshot",
+            "t3_controller.operations.require_thread_snapshot",
             side_effect=delayed_snapshot,
         ):
             started = time.monotonic()
@@ -505,10 +504,10 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
             dry_run=False,
         )
         with (
-            patch("t3_rpc_controller.validate_project_and_model", new=AsyncMock()),
-            patch("t3_rpc_controller.dispatch_command", new=AsyncMock(return_value={"sequence": 1})),
+            patch("t3_controller.operations.validate_project_and_model", new=AsyncMock()),
+            patch("t3_controller.operations.dispatch_command", new=AsyncMock(return_value={"sequence": 1})),
             patch(
-                "t3_rpc_controller.wait_for_shell_thread",
+                "t3_controller.operations.wait_for_shell_thread",
                 new=AsyncMock(side_effect=OSError("readback failed")),
             ),
         ):
@@ -538,12 +537,12 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
         )
         with (
             patch(
-                "t3_rpc_controller.require_thread_snapshot",
+                "t3_controller.operations.require_thread_snapshot",
                 new=AsyncMock(return_value={"thread": thread}),
             ),
-            patch("t3_rpc_controller.dispatch_command", new=AsyncMock(return_value={"sequence": 1})),
+            patch("t3_controller.operations.dispatch_command", new=AsyncMock(return_value={"sequence": 1})),
             patch(
-                "t3_rpc_controller.wait_for_thread_message",
+                "t3_controller.operations.wait_for_thread_message",
                 new=AsyncMock(side_effect=OSError("readback failed")),
             ),
         ):
@@ -575,11 +574,11 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
         }
         with (
             patch(
-                "t3_rpc_controller.send_thread_operation",
+                "t3_controller.operations.send_thread_operation",
                 new=AsyncMock(return_value=submission),
             ) as send,
             patch(
-                "t3_rpc_controller.wait_thread_operation",
+                "t3_controller.operations.wait_thread_operation",
                 new=AsyncMock(return_value=outcome),
             ) as wait,
         ):
@@ -611,13 +610,13 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
             dry_run=False,
         )
         with (
-            patch("t3_rpc_controller.uuid.uuid4", side_effect=["command-1", "message-1"]),
+            patch("t3_controller.operations.uuid.uuid4", side_effect=["command-1", "message-1"]),
             patch(
-                "t3_rpc_controller.require_thread_snapshot",
+                "t3_controller.operations.require_thread_snapshot",
                 new=AsyncMock(side_effect=[{"thread": thread}, {"thread": confirmed}]),
             ),
             patch(
-                "t3_rpc_controller.dispatch_command",
+                "t3_controller.operations.dispatch_command",
                 new=AsyncMock(return_value={"sequence": 1}),
             ) as dispatch,
         ):
@@ -628,7 +627,7 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
 
         thread["modelSelection"]["instanceId"] = "claude"
         with patch(
-            "t3_rpc_controller.require_thread_snapshot",
+            "t3_controller.operations.require_thread_snapshot",
             new=AsyncMock(return_value={"thread": thread}),
         ):
             with self.assertRaisesRegex(ValueError, "restricted to provider instance codex"):
@@ -661,11 +660,11 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
         )
         with (
             patch(
-                "t3_rpc_controller.require_thread_snapshot",
+                "t3_controller.operations.require_thread_snapshot",
                 new=AsyncMock(side_effect=[{"thread": before}, {"thread": confirmed}]),
             ),
             patch(
-                "t3_rpc_controller.dispatch_command",
+                "t3_controller.operations.dispatch_command",
                 new=AsyncMock(side_effect=OSError("connection dropped after send")),
             ),
         ):
@@ -676,10 +675,10 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "t3_rpc_controller.require_thread_snapshot",
+                "t3_controller.operations.require_thread_snapshot",
                 new=AsyncMock(return_value={"thread": confirmed}),
             ),
-            patch("t3_rpc_controller.dispatch_command", new=AsyncMock()) as dispatch,
+            patch("t3_controller.operations.dispatch_command", new=AsyncMock()) as dispatch,
         ):
             retried = await send_thread_operation(object(), command_args, "Do work")
         self.assertTrue(retried["reconciled"])
@@ -690,7 +689,7 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
             "messages": [{"id": message_id, "role": "user", "text": "Different work"}],
         }
         with patch(
-            "t3_rpc_controller.require_thread_snapshot",
+            "t3_controller.operations.require_thread_snapshot",
             new=AsyncMock(return_value={"thread": mismatched}),
         ):
             with self.assertRaisesRegex(ValueError, "does not match"):
@@ -724,14 +723,14 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
             "worktreePath": None,
         }
         with (
-            patch("t3_rpc_controller.validate_project_and_model", new=AsyncMock()),
-            patch("t3_rpc_controller.find_any_shell_thread", new=AsyncMock(return_value=None)),
+            patch("t3_controller.operations.validate_project_and_model", new=AsyncMock()),
+            patch("t3_controller.operations.find_any_shell_thread", new=AsyncMock(return_value=None)),
             patch(
-                "t3_rpc_controller.dispatch_command",
+                "t3_controller.operations.dispatch_command",
                 new=AsyncMock(side_effect=OSError("connection dropped after create")),
             ),
             patch(
-                "t3_rpc_controller.wait_for_shell_thread",
+                "t3_controller.operations.wait_for_shell_thread",
                 new=AsyncMock(return_value=exact),
             ),
         ):
@@ -745,15 +744,15 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
         command_args = args(environment="mac", thread_id="t1", session=True, dry_run=False)
         with (
             patch(
-                "t3_rpc_controller.require_thread_snapshot",
+                "t3_controller.operations.require_thread_snapshot",
                 new=AsyncMock(return_value={"thread": thread}),
             ),
             patch(
-                "t3_rpc_controller.dispatch_command",
+                "t3_controller.operations.dispatch_command",
                 new=AsyncMock(return_value={"sequence": 1}),
             ),
             patch(
-                "t3_rpc_controller.wait_for_shell_thread",
+                "t3_controller.operations.wait_for_shell_thread",
                 new=AsyncMock(return_value=stopped),
             ) as wait,
         ):
@@ -776,7 +775,7 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
             }
         }
         with patch(
-            "t3_rpc_controller.require_thread_snapshot",
+            "t3_controller.operations.require_thread_snapshot",
             new=AsyncMock(return_value=failed),
         ):
             with self.assertRaisesRegex(RuntimeError, "rejected"):
@@ -808,15 +807,15 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
         )
         with (
             patch(
-                "t3_rpc_controller.require_thread_snapshot",
+                "t3_controller.operations.require_thread_snapshot",
                 new=AsyncMock(return_value={"thread": pending}),
             ),
             patch(
-                "t3_rpc_controller.dispatch_command",
+                "t3_controller.operations.dispatch_command",
                 new=AsyncMock(return_value={"sequence": 1}),
             ),
             patch(
-                "t3_rpc_controller.wait_for_request_cleared",
+                "t3_controller.operations.wait_for_request_cleared",
                 new=AsyncMock(return_value=resolved),
             ) as wait,
         ):
@@ -847,15 +846,15 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
         command_args = args(environment="mac", thread_id="t1", request_id="q1", dry_run=False)
         with (
             patch(
-                "t3_rpc_controller.require_thread_snapshot",
+                "t3_controller.operations.require_thread_snapshot",
                 new=AsyncMock(return_value={"thread": pending}),
             ),
             patch(
-                "t3_rpc_controller.dispatch_command",
+                "t3_controller.operations.dispatch_command",
                 new=AsyncMock(return_value={"sequence": 1}),
             ),
             patch(
-                "t3_rpc_controller.wait_for_request_cleared",
+                "t3_controller.operations.wait_for_request_cleared",
                 new=AsyncMock(return_value=resolved),
             ) as wait,
         ):
@@ -879,7 +878,7 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
             "activities": [{"kind": "approval.requested", "payload": {"requestId": "a1"}}],
         }
         with patch(
-            "t3_rpc_controller.require_thread_snapshot",
+            "t3_controller.operations.require_thread_snapshot",
             new=AsyncMock(return_value={"thread": non_codex}),
         ):
             with self.assertRaisesRegex(ValueError, "restricted to provider instance codex"):
@@ -890,7 +889,7 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
             {"kind": "user-input.requested", "payload": {"requestId": "q1"}}
         ]
         with patch(
-            "t3_rpc_controller.require_thread_snapshot",
+            "t3_controller.operations.require_thread_snapshot",
             new=AsyncMock(return_value={"thread": non_codex}),
         ):
             with self.assertRaisesRegex(ValueError, "restricted to provider instance codex"):
@@ -909,14 +908,14 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
             "modelSelection": {"instanceId": "codex", "model": "gpt-test"},
         }
         with (
-            patch("t3_rpc_controller.require_thread_snapshot", new=AsyncMock()),
-            patch("t3_rpc_controller.validate_model", new=AsyncMock()),
+            patch("t3_controller.operations.require_thread_snapshot", new=AsyncMock()),
+            patch("t3_controller.operations.validate_model", new=AsyncMock()),
             patch(
-                "t3_rpc_controller.dispatch_command",
+                "t3_controller.operations.dispatch_command",
                 new=AsyncMock(return_value={"sequence": 1}),
             ),
             patch(
-                "t3_rpc_controller.wait_for_shell_thread",
+                "t3_controller.operations.wait_for_shell_thread",
                 new=AsyncMock(return_value=model_thread),
             ) as model_wait,
         ):
@@ -926,13 +925,13 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
 
         rename_args = args(environment="mac", thread_id="t1", title="New title", dry_run=False)
         with (
-            patch("t3_rpc_controller.require_thread_snapshot", new=AsyncMock()),
+            patch("t3_controller.operations.require_thread_snapshot", new=AsyncMock()),
             patch(
-                "t3_rpc_controller.dispatch_command",
+                "t3_controller.operations.dispatch_command",
                 new=AsyncMock(return_value={"sequence": 2}),
             ),
             patch(
-                "t3_rpc_controller.wait_for_shell_thread",
+                "t3_controller.operations.wait_for_shell_thread",
                 new=AsyncMock(return_value={"id": "t1", "title": "New title"}),
             ) as rename_wait,
         ):
@@ -943,7 +942,7 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
         archive_args = args(environment="mac", thread_id="t1", dry_run=False)
         with (
             patch(
-                "t3_rpc_controller.find_shell_thread",
+                "t3_controller.operations.find_shell_thread",
                 new=AsyncMock(
                     side_effect=[
                         {"id": "t1", "archivedAt": None},
@@ -952,7 +951,7 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
                 ),
             ),
             patch(
-                "t3_rpc_controller.dispatch_command",
+                "t3_controller.operations.dispatch_command",
                 new=AsyncMock(return_value={"sequence": 3}),
             ),
         ):
@@ -971,16 +970,16 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
         )
         with (
             patch(
-                "t3_rpc_controller.require_thread_snapshot",
+                "t3_controller.operations.require_thread_snapshot",
                 new=AsyncMock(
                     side_effect=[{"thread": before}, {"thread": wrong}, {"thread": exact}]
                 ),
             ),
             patch(
-                "t3_rpc_controller.dispatch_command",
+                "t3_controller.operations.dispatch_command",
                 new=AsyncMock(return_value={"sequence": 1}),
             ),
-            patch("t3_rpc_controller.asyncio.sleep", new=AsyncMock()),
+            patch("t3_controller.operations.asyncio.sleep", new=AsyncMock()),
         ):
             result = await thread_state_operation(object(), command_args, "snooze")
         self.assertEqual(result["thread"]["snoozedUntil"], exact["snoozedUntil"])
@@ -997,7 +996,7 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
 
         command_args.confirm_thread_id = "t1"
         with patch(
-            "t3_rpc_controller.find_any_shell_thread",
+            "t3_controller.operations.find_any_shell_thread",
             new=AsyncMock(return_value={"id": "t1", "latestTurn": {"state": "running"}}),
         ):
             with self.assertRaisesRegex(ValueError, "running turn"):
@@ -1005,11 +1004,11 @@ class OperationTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "t3_rpc_controller.find_any_shell_thread",
+                "t3_controller.operations.find_any_shell_thread",
                 new=AsyncMock(side_effect=[{"id": "t1", "latestTurn": {"state": "completed"}}, None]),
             ),
             patch(
-                "t3_rpc_controller.dispatch_command",
+                "t3_controller.operations.dispatch_command",
                 new=AsyncMock(return_value={"sequence": 1}),
             ),
         ):

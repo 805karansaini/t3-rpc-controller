@@ -1,5 +1,7 @@
 # T3 RPC Controller handoff
 
+This records the original implementation checks. See [the refactor audit](docs/audit.md) for the current structure and verification results.
+
 ## Goal
 
 Build a command-line controller that lets an agent operate T3 Code on the Mac and i7 machines. T3 Code remains the graphical interface. This project supplies safe discovery, task dispatch, monitoring, intervention, and thread management.
