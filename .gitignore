@@ -19,3 +19,12 @@ htmlcov/
 # Package build outputs
 build/
 dist/
+
+# Common local credential files
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*
+secrets*
